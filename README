@@ -1,0 +1,50 @@
+# Custom Multi-Asset Index Construction
+
+## Overview
+This project builds a custom equity index using factor-based portfolio construction. The index selects and weights securities based on momentum and market capitalization, with systematic monthly rebalancing.
+
+## Key Features
+- Analyzed 30+ equities using 2+ years of historical data
+- Implemented momentum-based signal generation
+- Designed market-cap weighted portfolio construction
+- Monthly rebalancing across 24+ periods
+- Performance benchmarking vs S&P 500
+
+## Methodology
+
+### 1. Data Processing
+- Collected historical price data
+- Cleaned and aligned time series
+- Computed returns and rolling metrics
+
+### 2. Signal Generation
+- Momentum factor based on past returns
+- Ranked securities based on signal strength
+
+### 3. Portfolio Construction
+- Selected top 10 securities per rebalance period
+- Weighted portfolio using market capitalization
+
+### 4. Rebalancing Strategy
+- Monthly portfolio updates
+- Adjusted weights dynamically based on signals
+
+### 5. Performance Evaluation
+- Total returns
+- Sharpe ratio
+- Maximum drawdown
+
+## Results
+- Built a systematic index with dynamic allocation
+- Demonstrated factor-driven portfolio behavior
+- Compared performance against S&P 500 benchmark
+
+## Tech Stack
+- Python (Pandas, NumPy)
+- Matplotlib / Seaborn
+- Time Series Analysis
+
+## Future Improvements
+- Add risk parity weighting
+- Incorporate multi-factor signals (value, volatility)
+- Backtest with transaction costs
