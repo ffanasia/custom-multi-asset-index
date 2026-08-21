@@ -21,6 +21,14 @@ gross/net axes, which were ambiguous in the first draft. None of the underlying 
 changed -- this pass adds uncertainty bounds and scope caveats around claims that were stated
 too plainly the first time.
 
+Third pass: the walk-forward check only tests one design choice against out-of-sample data,
+which leaves open whether the *rest* of the design (universe, concentration, blend windows,
+defensive basket) was implicitly overfit by eyeballing the full period. Added a deflated
+Sharpe ratio (Bailey & Lopez de Prado, 2014) to answer that directly -- it corrects the
+reported Sharpe for how many design choices were effectively tried, using the real
+(non-normal) shape of the daily return distribution rather than assuming Gaussian returns.
+This is a step most backtests, including the original version of this one, skip entirely.
+
 ## walk-forward validation
 
 The 252-day (12M) ranking window was chosen by sweeping the full 2015-2024 period, which
@@ -156,6 +164,52 @@ the same way -- but the Sharpe-parity framing needed this check before it could 
 fact rather than observation.
 
 See `fig9_significance.png`.
+
+## deflated Sharpe ratio: is the edge itself real, or overfit to this design?
+
+The walk-forward check above only tested one design choice -- REL_MOM_WINDOW -- against an
+out-of-sample period. But the full design has several more choices that were all picked by
+looking at the *entire* 2015-2024 period at once: the 5-asset universe, the top-2
+concentration, the [63,126,252] momentum blend, which two assets sit in the defensive basket.
+Every one of those is an implicit "trial" against the same data, and running N trials and
+keeping the best one inflates the reported Sharpe above its true expected value under the null
+of no skill -- purely by chance, some of N trials will look good.
+
+This is a different question from the significance test above. That test asked "is the
+strategy's Sharpe meaningfully *higher than SPY's*?" (answer: no, not distinguishable). This
+one asks "is the strategy's Sharpe meaningfully *higher than zero* -- once corrected for how
+many things were implicitly tried while designing it?"
+
+Used the deflated Sharpe ratio (Bailey & Lopez de Prado, 2014) to answer this properly: it
+computes the Sharpe ratio you'd expect the *best* of N trials to hit by pure luck (using the
+actual variance across trials, not an assumption), then reports the probability the observed
+Sharpe clears that bar -- using the real skewness and kurtosis of daily returns instead of
+assuming a normal distribution (daily returns here have skew -0.48 and kurtosis 6.7, both far
+from normal, which the standard Sharpe ratio silently ignores).
+
+The honest complication: the *true* number of implicit trials in the full design is almost
+certainly more than the 6 windows actually swept in the walk-forward check -- there's no way
+to give an exact count for "how many times did I eyeball a chart before landing on 5 tickers
+and a 2-asset defensive basket." Rather than pick one flattering number, computed it across a
+range and let the reader see how it holds up:
+
+| assumed N | luck bar (annualized Sharpe) | DSR (P(edge is real)) |
+|---|---|---|
+| 1 (no correction) | 0.00 | 97.9% |
+| 6 (windows actually tested) | 0.10 | 95.7% |
+| 20 | 0.15 | 94.1% |
+| 100 | 0.20 | 92.1% |
+
+Even under a generous assumption of 100 implicit trials, the "luck bar" only rises to a Sharpe
+of ~0.20 -- nowhere near the observed 0.65 -- because the variance in outcomes across the
+windows actually tested was small (they ranged Sharpe 0.47 to 0.67, not wildly). The deflated
+Sharpe ratio stays above 92% across the entire sweep. Reading: this isn't proof the specific
+252-day window is the best possible choice (the walk-forward section already showed several
+windows are statistically indistinguishable from each other), but it is good evidence that the
+overall approach -- multi-asset momentum with a defensive fallback -- has a real edge over
+holding cash, rather than being the lucky survivor of an unreported search.
+
+See `fig10_deflated_sharpe.png`.
 
 ## cost sensitivity + Calmar ratio
 

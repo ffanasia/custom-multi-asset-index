@@ -337,6 +337,110 @@ results["significance"] = {
 }
 print()
 
+# =================================================================
+# 7. deflated Sharpe ratio (Bailey & Lopez de Prado, 2014)
+#
+# the walk-forward check (section 5) only tested one design choice --
+# REL_MOM_WINDOW -- against an out-of-sample period. but the full design
+# has several more choices that were all picked by eyeballing the *entire*
+# 2015-2024 period at once: the 5-asset universe, the top-2 concentration,
+# the [63,126,252] momentum blend, which two assets sit in the defensive
+# basket. every one of those is an implicit "trial" against the same data.
+# running N trials and reporting the best one inflates the reported Sharpe
+# above its true expected value under the null of no skill -- the more
+# trials, the more some of them will look good by luck alone.
+#
+# the deflated Sharpe ratio corrects for this. it asks: given that N
+# trials were effectively run, each with some variance in outcome, what
+# Sharpe ratio would you expect the *best* of them to hit by pure chance?
+# then it reports the probability that the observed Sharpe exceeds that
+# luck-adjusted bar, using the full (non-normal) return distribution
+# instead of assuming Gaussian returns.
+#
+# uses the 6 real walk-forward trials from section 5 as the empirical
+# basis for the trial-to-trial variance term -- an honest, computed number
+# rather than an assumed one. the true number of implicit trials in the
+# full design is almost certainly higher than 6; the sensitivity sweep
+# below shows how the result degrades as N grows, so that ambiguity is
+# visible rather than hidden behind one number.
+# =================================================================
+print("=== deflated sharpe ratio ===")
+from scipy import stats as sps
+
+EULER_MASCHERONI = 0.5772156649015329
+
+def daily_sharpe(r, rf=v4.risk_free_rate):
+    """Non-annualized per-day Sharpe ratio -- kept in daily units throughout
+    so it's consistent with T (a daily observation count) and with the
+    skew/kurtosis of daily returns. (Annualizing SR but not the moments
+    used alongside it would silently break the formula.)"""
+    excess = r.dropna() - rf / 252
+    return excess.mean() / excess.std(ddof=1)
+
+def expected_max_sharpe(V, N):
+    """E[max of N Sharpe estimates] under the null of zero true skill,
+    given cross-trial variance V (Bailey & Lopez de Prado, 2014)."""
+    if N <= 1:
+        return 0.0
+    return np.sqrt(V) * (
+        (1 - EULER_MASCHERONI) * sps.norm.ppf(1 - 1.0 / N)
+        + EULER_MASCHERONI * sps.norm.ppf(1 - 1.0 / (N * np.e))
+    )
+
+def probabilistic_sharpe(sr_hat, sr_benchmark, T, skew, kurt):
+    """P(true Sharpe > sr_benchmark), correcting for T, skewness, kurtosis
+    of the return series (Bailey & Lopez de Prado, 2012)."""
+    denom = np.sqrt(max(1 - skew * sr_hat + ((kurt - 1) / 4) * sr_hat ** 2, 1e-12))
+    z = (sr_hat - sr_benchmark) * np.sqrt(T - 1) / denom
+    return sps.norm.cdf(z)
+
+net_r_clean = baseline["net_returns"].dropna()
+excess_r = net_r_clean - v4.risk_free_rate / 252
+T_obs = len(excess_r)
+sr_hat = daily_sharpe(net_r_clean)
+skew_hat = sps.skew(excess_r, bias=False)
+kurt_hat = sps.kurtosis(excess_r, fisher=False, bias=False)  # non-excess, normal=3
+
+print(f"  observed: T={T_obs} days, daily SR={sr_hat:.4f} (annualized {sr_hat*np.sqrt(252):.3f}), "
+      f"skew={skew_hat:.3f}, kurtosis={kurt_hat:.3f}")
+
+# empirical cross-trial variance from the 6 real walk-forward trials
+trial_daily_sharpes = np.array([daily_sharpe(window_cache[w]["net_returns"]) for w in grid])
+V_trials = trial_daily_sharpes.var(ddof=1)
+print(f"  {len(grid)} real trials (walk-forward window grid), daily SR range "
+      f"[{trial_daily_sharpes.min():.4f}, {trial_daily_sharpes.max():.4f}], var={V_trials:.6f}")
+
+N_actual = len(grid)
+sr0_actual = expected_max_sharpe(V_trials, N_actual)
+dsr_actual = probabilistic_sharpe(sr_hat, sr0_actual, T_obs, skew_hat, kurt_hat)
+print(f"  N={N_actual} (only the tested windows): expected max SR by luck alone = "
+      f"{sr0_actual:.4f} (annualized {sr0_actual*np.sqrt(252):.3f}); DSR = {dsr_actual:.1%}")
+
+psr_n1 = probabilistic_sharpe(sr_hat, 0.0, T_obs, skew_hat, kurt_hat)
+print(f"  for reference, N=1 (single hypothesis, no multiple-testing correction): "
+      f"PSR vs. SR*=0 -> {psr_n1:.1%}")
+
+n_sweep = [1, 2, 3, 6, 10, 15, 20, 30, 50, 75, 100]
+sweep_rows = []
+for n in n_sweep:
+    sr0_n = expected_max_sharpe(V_trials, n)
+    dsr_n = probabilistic_sharpe(sr_hat, sr0_n, T_obs, skew_hat, kurt_hat)
+    sweep_rows.append({"N": n, "sr0_annualized": float(sr0_n * np.sqrt(252)), "dsr": float(dsr_n)})
+    print(f"    N={n:>4}:  luck-bar (ann.)={sr0_n*np.sqrt(252):.3f}   DSR={dsr_n:.1%}")
+
+results["deflated_sharpe"] = {
+    "sr_hat_annualized": float(sr_hat * np.sqrt(252)),
+    "T": int(T_obs),
+    "skew": float(skew_hat),
+    "kurtosis": float(kurt_hat),
+    "n_actual_trials": N_actual,
+    "sr0_actual_annualized": float(sr0_actual * np.sqrt(252)),
+    "dsr_actual": float(dsr_actual),
+    "psr_n1": float(psr_n1),
+    "sweep": sweep_rows,
+}
+print()
+
 with open("extended_results.json", "w") as f:
     json.dump(results, f, indent=2, default=float)
 print("saved extended_results.json")
