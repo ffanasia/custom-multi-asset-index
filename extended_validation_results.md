@@ -13,6 +13,14 @@ Script: `extended_validation_v4.py`. Sanity-checked against `backtest_v4.db` bef
 any of it -- the baseline run reproduces the known numbers (0.651 Sharpe, -22.57% MDD, 2.76%
 cost drag) to 3 decimal places.
 
+Second pass, after a self-review of the first version of this doc: added analytical standard
+errors to the walk-forward Sharpe estimates, ran a paired block-bootstrap significance test on
+the strategy-vs-SPY Sharpe gap, disclosed that the regime windows were chosen with hindsight,
+flagged the Calmar ratio's single-episode fragility, and relabeled the ablation chart's
+gross/net axes, which were ambiguous in the first draft. None of the underlying numbers
+changed -- this pass adds uncertainty bounds and scope caveats around claims that were stated
+too plainly the first time.
+
 ## walk-forward validation
 
 The 252-day (12M) ranking window was chosen by sweeping the full 2015-2024 period, which
@@ -21,14 +29,52 @@ window using only 2016-2019 data (blind to what happens after), then check how t
 performs on 2020-2024 it never saw.
 
 Blind fit-period pick: 189 trading days. Full-period-optimal pick: also 189 days. They agree
--- the window wasn't just curve-fit to the reporting period. Out-of-sample (2020-2024) result
-for the fit-blind choice: Sharpe 0.83, return +93.7%, max drawdown -17.7%.
+-- for this one hyperparameter, the window wasn't just curve-fit to the reporting period.
+Out-of-sample (2020-2024) result for the fit-blind choice: Sharpe 0.83, return +93.7%, max
+drawdown -17.7%.
 
-One wrinkle worth being upfront about: this sweep finds 189 days edges out 252 days on Sharpe
-over the full period (0.673 vs 0.651) -- a modest, not dramatic, difference. The original
-252-day pick remains defensible (it's what's actually running, and the gap is small enough
-that it could be noise), but 189 days is arguably a fractionally better choice and worth
-testing further before switching.
+Two things worth being upfront about, added after a second look:
+
+**Scope.** This only tests one design choice -- the momentum ranking window -- picked blind
+on an earlier period and checked out-of-sample. It says nothing about the rest of the design
+(the two-asset concentration, the defensive-fallback logic, the asset universe itself), all of
+which were chosen by looking at the whole 2015-2024 run. "Not overfit" below refers only to
+the ranking window, not to the strategy as a whole.
+
+**The fit-period Sharpe estimates are noisy.** Four years of monthly-rebalanced returns is a
+small sample, and Sharpe ratios estimated on samples that short carry wide standard errors. Added
+analytical SEs (Lo, 2002 approximation) to each window's fit-period estimate:
+
+| window | fit Sharpe | ± SE |
+|---|---|---|
+| 21d | 0.39 | 0.52 |
+| 42d | 0.34 | 0.51 |
+| 63d | 0.53 | 0.53 |
+| 126d | 0.32 | 0.51 |
+| 189d | 0.58 | 0.54 |
+| 252d | 0.52 | 0.53 |
+
+Every one of these error bars overlaps every other one. The 189-day "winner" on the fit period
+is not statistically distinguishable from 252d, 63d, or even 21d given only four years of data
+-- the blind-selection process picked a window that happens to also do well out-of-sample, but
+the fit-period comparison itself doesn't have the power to declare a winner. The "they agree"
+finding above is real and worth keeping, but it shouldn't be read as "189d is provably the
+best window" -- it's "189d survived a blind test," which is a weaker and more honest claim.
+
+**One more wrinkle:** this sweep finds 189 days edges out 252 days on Sharpe over the full
+period (0.673 vs 0.651) -- see the significance section below for why that gap isn't
+meaningful either. The original 252-day pick remains what's actually running and is fully
+defensible.
+
+**On the out-of-sample Sharpe (0.83).** It's tempting to read that as proof the fit-blind
+window works. Checked whether 2020-2024 was just a strong market generally by computing SPY's
+own Sharpe over the same window: 0.66, essentially flat versus SPY's own full-period number
+(0.67). So this wasn't a rising tide lifting all boats -- the strategy's OOS Sharpe really is
+higher than its own full-period number. The more likely explanation is structural, not
+statistical: the COVID crash (Feb-Mar 2020) landed inside this test window, and the regime
+breakdown below shows that's exactly where this design earns its keep. That's a real result,
+but it's a result about one crash landing in the test period, not a general validation that
+the strategy performs better going forward.
 
 See `walk_forward_v4.png`.
 
@@ -51,9 +97,22 @@ notes (TLT alone failed badly in 2022) but it's now measured instead of anecdota
 means the sizing scheme was never the load-bearing piece of this design -- the fallback logic
 was.
 
-See `ablation_ladder_v4.png`.
+Note on the table: only the last row nets out transaction costs -- the first three isolate the
+gross effect of each design layer so the comparison isn't muddied by costs changing alongside
+the strategy. The chart labels this explicitly (gross/gross/gross/net) after an earlier version
+left it ambiguous.
+
+See `fig5_ablation.png`.
 
 ## regime breakdown
+
+One caveat before the numbers: these six windows were chosen with hindsight, by looking at
+where the strategy and SPY visibly diverged and drawing boundaries around it (the COVID crash
+dates, the 2022 bear market, and so on are all well-known, easily-identified periods). That's
+a reasonable way to organize a narrative, but it's not a blind or pre-registered partition of
+the data, and hand-picked regime boundaries can flatter whichever story you're already telling.
+Treat this section as a structured description of what happened in known periods, not as
+independent statistical evidence.
 
 Sliced strategy (net) vs. SPY returns and drawdown across six labeled periods:
 
@@ -79,6 +138,25 @@ better full-year return.
 
 See `regime_breakdown_v4.png`.
 
+## significance: is 0.65 vs 0.67 even a real gap?
+
+Ran a paired block-bootstrap on the strategy-vs-SPY Sharpe difference -- same block-resampling
+technique as the project's own 1M-path Monte Carlo engine (20-day blocks), applied here to test
+a hypothesis instead of estimate a risk distribution. 20,000 resamples, same paired dates for
+both series each draw so the correlation structure is preserved.
+
+**Result: 95% CI on Sharpe(strategy) − Sharpe(SPY) = [−0.65, 0.56]. Includes zero. The strategy
+has the higher Sharpe in only 45.1% of resampled histories.**
+
+Plainly: the 0.65 vs 0.67 Sharpe gap is not distinguishable from noise. "Comparable Sharpe" is
+the right way to describe it; "matched Sharpe" or "equal Sharpe" overstates what a single
+9-year backtest can actually establish. This doesn't undercut the drawdown result -- the
+-22% vs -34% max-drawdown gap is a single realized fact, not a ratio with a standard error in
+the same way -- but the Sharpe-parity framing needed this check before it could be stated as
+fact rather than observation.
+
+See `fig9_significance.png`.
+
 ## cost sensitivity + Calmar ratio
 
 Reran net returns at 0/5/10/20/30bps per rebalance. Sharpe degrades roughly linearly from
@@ -97,3 +175,12 @@ does:
 The strategy actually wins on Calmar despite a near-tied Sharpe -- more return per unit of
 max drawdown taken, which is arguably the more relevant number given the entire point of the
 defensive-fallback design.
+
+Worth flagging: Calmar is a fragile statistic here -- both numbers are driven by a single
+worst-drawdown episode per series (the strategy's -22.6% happened once, SPY's -33.7% happened
+once), not an average or distribution. A different draw of market history could put either
+number somewhere else entirely. Unlike the Sharpe comparison above, there wasn't a clean way
+to bootstrap a confidence interval on this one (the max-drawdown statistic doesn't decompose
+into independent blocks the way a mean return does), so treat the 0.46 vs 0.39 gap as
+directional and real for this specific 2015-2024 history, not as a precisely estimated
+population parameter.

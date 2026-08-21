@@ -256,6 +256,87 @@ results["walk_forward"] = {
     "full_period_winner": int(full_winner),
 }
 
+# =================================================================
+# 6. statistical rigor add-ons, in response to review
+#    - analytical SE on the walk-forward Sharpe estimates (the fit period
+#      is only 4 years -- Sharpe estimates that short are noisy, and the
+#      original walk-forward chart didn't show that)
+#    - SPY's own Sharpe over the same OOS test window, so a high strategy
+#      OOS Sharpe can be read against "was the whole market just strong
+#      here" instead of looking like strategy-specific outperformance
+#    - a block-bootstrap significance check on strategy-vs-SPY Sharpe,
+#      reusing the same block-bootstrap machinery as the project's own
+#      Monte Carlo engine (paired resampling to preserve correlation)
+# =================================================================
+print("=== statistical rigor add-ons ===")
+
+def sharpe_se(sharpe, n_days):
+    """Analytical standard error of a Sharpe estimate (Lo, 2002 approx)."""
+    years = n_days / 252
+    return np.sqrt((1 + 0.5 * sharpe ** 2) / years)
+
+wf_df["fit_years"] = (pd.Timestamp(FIT_END) - pd.Timestamp(FIT_START)).days / 365.25
+wf_df["fit_se"] = wf_df.apply(lambda row: sharpe_se(row["fit_sharpe"], row["fit_years"] * 252), axis=1)
+full_years = (net_r.index[-1] - net_r.index[0]).days / 365.25
+wf_df["full_se"] = wf_df["full_sharpe"].apply(lambda s: sharpe_se(s, full_years * 252))
+print("fit-period Sharpe +/- 1 SE (4yr sample -- these overlap a lot):")
+for w, row in wf_df.iterrows():
+    print(f"  {w:>4}d:  {row['fit_sharpe']:.2f} +/- {row['fit_se']:.2f}")
+results["walk_forward"]["fit_se"] = wf_df["fit_se"].round(3).tolist()
+results["walk_forward"]["full_se"] = wf_df["full_se"].round(3).tolist()
+
+spy_test_sharpe = v4.sharpe_ratio(spy_returns.loc[TEST_START:TEST_END], v4.risk_free_rate)
+strat_test_sharpe = wf_df.loc[fit_winner, "test_sharpe"]
+print(f"\nOOS (2020-2024) Sharpe -- strategy: {strat_test_sharpe:.2f}, SPY: {spy_test_sharpe:.2f}")
+print(f"(SPY's OOS Sharpe ({spy_test_sharpe:.2f}) is essentially flat vs. its own full-period number")
+print(f" ({spy_stats['sharpe']:.2f}) -- 2020-2024 was NOT a generically strong stretch for the market.")
+print(" the strategy's OOS boost looks specific to it, most plausibly the COVID crash landing")
+print(" inside this test window, not a rising-tide effect)")
+results["walk_forward"]["spy_test_sharpe"] = float(spy_test_sharpe)
+
+# paired block-bootstrap on strategy-vs-SPY Sharpe, same block_size as v4's own MC
+n_boot = 20_000
+strat_r = baseline["net_returns"].dropna()
+common_idx = strat_r.index.intersection(spy_returns.index)
+strat_arr = strat_r.loc[common_idx].values
+spy_arr = spy_returns.loc[common_idx].values
+n = len(common_idx)
+block_size = v4.MC_BLOCK_SIZE
+n_blocks = int(np.ceil(n / block_size))
+starts = np.random.randint(0, n - block_size + 1, size=(n_boot, n_blocks))
+offsets = np.arange(block_size)
+idx = starts[:, :, None] + offsets[None, None, :]
+idx_flat = idx.reshape(n_boot, n_blocks * block_size)[:, :n]
+
+strat_batch = strat_arr[idx_flat]
+spy_batch = spy_arr[idx_flat]
+
+def batch_sharpe(batch, rf=v4.risk_free_rate):
+    excess = batch - rf / 252
+    return np.sqrt(252) * excess.mean(axis=1) / excess.std(axis=1)
+
+strat_sh = batch_sharpe(strat_batch)
+spy_sh = batch_sharpe(spy_batch)
+diff = strat_sh - spy_sh
+ci_lo, ci_hi = np.percentile(diff, [2.5, 97.5])
+pct_strategy_wins = (diff > 0).mean()
+print(f"\nblock-bootstrap (n={n_boot:,}, same paired history, block={block_size}d) on Sharpe(strategy) - Sharpe(SPY):")
+print(f"  95% CI: [{ci_lo:.3f}, {ci_hi:.3f}]  (includes zero: {ci_lo <= 0 <= ci_hi})")
+print(f"  strategy has higher Sharpe in {pct_strategy_wins:.1%} of resampled histories")
+print("  reading: the 0.65 vs 0.67 gap is not distinguishable from noise -- 'comparable' is the right word, not 'matched'")
+hist_counts, hist_edges = np.histogram(diff, bins=60)
+results["significance"] = {
+    "sharpe_diff_ci_95": [float(ci_lo), float(ci_hi)],
+    "ci_includes_zero": bool(ci_lo <= 0 <= ci_hi),
+    "pct_resamples_strategy_higher_sharpe": float(pct_strategy_wins),
+    "n_bootstrap": n_boot,
+    "block_size": block_size,
+    "diff_mean": float(diff.mean()),
+    "diff_hist_counts": hist_counts.tolist(),
+    "diff_hist_edges": hist_edges.tolist(),
+}
+print()
+
 with open("extended_results.json", "w") as f:
     json.dump(results, f, indent=2, default=float)
-print("\nsaved extended_results.json")
+print("saved extended_results.json")
