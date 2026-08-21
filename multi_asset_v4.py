@@ -1,39 +1,16 @@
 """
-Multi-Asset Dual-Momentum Backtest -- final version (multi_asset_v4.py).
+multi-asset dual momentum backtest, v4.
 
-STRATEGY
-Monthly-rebalanced dual momentum across SPY/TLT/GLD/QQQ/EEM. Each month:
-  1. Gate: an asset is eligible only if its blended 3M/6M/12M trailing
-     return is positive (MOM_BLEND_WINDOWS).
-  2. Rank: among eligible assets, rank by REL_MOM_WINDOW trailing return
-     and hold the top 2, sized inversely to their 20-day realized vol.
-  3. Defensive fallback: if nothing is eligible, hold whichever of
-     {TLT, GLD, CASH} currently has the best trailing return, rather than
-     defaulting to any one of them blindly.
-  4. Weights decided at each month-end take effect one trading day later
-     (no lookahead), and turnover is charged a bps cost each rebalance.
-
-DESIGN DECISIONS, VALIDATED AGAINST REAL 2015-2024 PRICE HISTORY
-  - Defensive fallback (step 3) replaced an earlier version that always
-    defaulted to TLT: in 2022 TLT itself fell alongside equities (rate-hike
-    regime), so the model was locked into a losing "safe" asset for 7
-    straight months. Scoring TLT/GLD/CASH against each other fixed this.
-  - The momentum gate (step 1) blends three lookback windows instead of
-    using a single raw 12M return, to reduce whipsaw right after sharp
-    reversals (e.g. the Q1 2019 recovery from the Dec-2018 selloff).
-  - REL_MOM_WINDOW was swept from 21 to 252 trading days against real
-    data; 252 (12M) produced the best risk-adjusted result of everything
-    tested -- Sharpe within 0.02 of SPY's, and the shallowest max drawdown
-    of any version built (including a static buy-and-hold of the same
-    average allocation, and SPY itself). Total return still trails SPY,
-    which is the expected tradeoff of running at ~13.6% annualized vol
-    vs. SPY's ~17.6%, not a flaw to be tuned away.
-  - COST_BPS, PORTFOLIO_NOTIONAL, and PARTICIPATION_WARN are assumptions,
-    not fitted values -- adjust them to whatever actually applies to your
-    execution setup before trusting the dollar-cost and liquidity output.
-
-Run locally (requires internet access for yfinance):
-    python multi_asset_v4.py
+monthly rebalance across SPY/TLT/GLD/QQQ/EEM. the logic:
+  - gate: an asset only counts if its blended 3/6/12M trailing return is
+    positive (MOM_BLEND_WINDOWS)
+  - rank: among whatever passes the gate, rank by REL_MOM_WINDOW trailing
+    return and hold the top 2, sized inverse to their 20-day realized vol
+  - fallback: if nothing passes, don't just dump into TLT -- score
+    TLT/GLD/CASH against each other and hold whichever's actually holding
+    up
+  - weights decided at month-end kick in one trading day later (no
+    lookahead), and turnover gets a bps cost charged every rebalance
 """
 
 import sqlite3
@@ -48,28 +25,24 @@ import matplotlib.pyplot as plt
 plt.style.use("seaborn-v0_8")
 np.random.seed(42)
 
-# =========================================
-# 1. Parameters
-# =========================================
+# --- parameters ---
 tickers = ["SPY", "TLT", "GLD", "QQQ", "EEM"]
 benchmark = "SPY"
 start_date = "2015-01-01"
 end_date = "2024-12-31"
 risk_free_rate = 0.02
 
-# Relative-momentum ranking window (trading days) used to pick the top assets
-# among whatever passes the absolute-momentum gate. Widened from 126 (6M) to
-# 252 (12M) after a sensitivity sweep found this was the largest untested
-# lever in the model -- see the module docstring for the sweep results.
+# ranking window for relative momentum, among whatever passes the gate below.
+# widened from 126 (6M) to 252 (12M) -- see notes at top, biggest lever in the model
 REL_MOM_WINDOW = 252
 
-# Enhancement A: defensive basket considered when no asset has positive
-# absolute momentum. "CASH" is always implicitly available (earns rf rate).
+# fallback basket for when nothing has positive momentum. cash is always
+# an option too (earns rf rate)
 DEFENSIVE_BASKET = ["TLT", "GLD"]
 CASH_TICKER = "CASH"
 
-# Enhancement B: blend these lookback windows (trading days) for the
-# risk-on/risk-off gate instead of a single raw 252-day momentum signal.
+# blending these lookback windows for the risk-on/off gate instead of just
+# a raw 252-day momentum signal
 MOM_BLEND_WINDOWS = [63, 126, 252]  # ~3M, 6M, 12M
 
 # Transaction costs
@@ -92,9 +65,7 @@ MC_FAN_CHART_SAMPLE = 5_000  # subsample of paths kept for the fan-chart plot (p
 DB_PATH = Path(__file__).with_name("backtest_v4.db")
 
 
-# =========================================
-# 2. Download data (prices + volume)
-# =========================================
+# --- pull data (prices + volume) ---
 def download_data():
     data = yf.download(
         tickers,
@@ -129,9 +100,7 @@ def download_data():
     return prices, volume
 
 
-# =========================================
-# 3. Signals
-# =========================================
+# --- signals ---
 def compute_signals(prices):
     returns = prices.pct_change().dropna()
 
@@ -145,9 +114,7 @@ def compute_signals(prices):
     return returns, rel_mom, vol20, abs_mom_blend
 
 
-# =========================================
-# 4. Monthly rebalance dates (bug-fixed in v3, unchanged here)
-# =========================================
+# --- rebalance dates (fixed a bug here in v3, fine now) ---
 def month_end_trading_dates(prices):
     s = prices.index.to_series()
     month_ends = s.groupby(s.index.to_period("M")).last()
@@ -167,9 +134,7 @@ def get_valid_dates(prices, abs_mom_blend, rel_mom):
     return valid_dates
 
 
-# =========================================
-# 5. Build monthly target weights (enhanced)
-# =========================================
+# --- build monthly weights ---
 def build_monthly_weights(prices, abs_mom_blend, rel_mom, vol20, valid_dates):
     all_cols = list(prices.columns) + [CASH_TICKER]
     monthly_weights = pd.DataFrame(0.0, index=valid_dates, columns=all_cols)
@@ -184,8 +149,8 @@ def build_monthly_weights(prices, abs_mom_blend, rel_mom, vol20, valid_dates):
         w = pd.Series(0.0, index=all_cols)
 
         if len(positive_assets) == 0:
-            # Enhancement A: pick the best of {TLT, GLD, CASH} by trailing
-            # blended momentum, instead of blindly defaulting to TLT.
+            # pick whichever of TLT/GLD/CASH is holding up best instead of
+            # defaulting straight to TLT -- see notes at top for why
             scores = {}
             for cand in defensive_candidates:
                 if cand in abs_signal.index:
@@ -212,9 +177,7 @@ def build_monthly_weights(prices, abs_mom_blend, rel_mom, vol20, valid_dates):
     return monthly_weights
 
 
-# =========================================
-# 6. Apply weights daily with 1-day lag
-# =========================================
+# --- apply weights daily, 1 day lag ---
 def apply_weights(monthly_weights, returns_ext):
     weights = monthly_weights.reindex(returns_ext.index).ffill().fillna(0.0)
     weights = weights.shift(1).fillna(0.0)
@@ -229,9 +192,7 @@ def build_extended_returns(returns):
     return returns_ext
 
 
-# =========================================
-# 7. Transaction cost analysis (unchanged from v3)
-# =========================================
+# --- transaction costs (same as v3) ---
 def transaction_costs(monthly_weights, cost_bps=COST_BPS):
     turnover = monthly_weights.diff().abs().sum(axis=1)
     turnover.iloc[0] = monthly_weights.iloc[0].abs().sum()
@@ -255,9 +216,7 @@ def apply_costs_to_returns(portfolio_returns, cost_table, returns_index):
     return net_returns
 
 
-# =========================================
-# 8. Liquidity evaluation (unchanged; CASH has no volume so it's skipped)
-# =========================================
+# --- liquidity check (cash has no volume, skip it) ---
 def liquidity_evaluation(prices, volume, monthly_weights):
     if volume is None:
         print("No volume data available; skipping liquidity evaluation.")
@@ -296,9 +255,7 @@ def liquidity_evaluation(prices, volume, monthly_weights):
     return liquidity_df
 
 
-# =========================================
-# 9. Performance metrics
-# =========================================
+# --- performance metrics ---
 def sharpe_ratio(r, rf=0.02):
     r = pd.Series(r).dropna()
     if r.std() == 0 or len(r) < 2:
@@ -314,10 +271,10 @@ def max_drawdown(cum_series):
 
 
 def rolling_24m_stats(portfolio_returns, window_days=252 * 2):
-    # NOTE: previously this rolled over (1 + portfolio_returns) and then added
-    # 1 again inside the lambda, double-compounding every window (computing
-    # prod(2+r) instead of prod(1+r)) and producing meaningless astronomical
-    # values. Fixed to roll directly over the raw daily returns.
+    # this used to roll over (1 + returns) and then add 1 again inside the
+    # lambda -- double counted the +1 every window (prod(2+r) instead of
+    # prod(1+r)) and produced nonsense numbers. rolling over raw returns
+    # directly fixes it.
     roll_return = portfolio_returns.rolling(window_days).apply(
         lambda x: np.prod(1 + x) ** (252 / window_days) - 1, raw=True
     )
@@ -327,19 +284,15 @@ def rolling_24m_stats(portfolio_returns, window_days=252 * 2):
     return roll_return, roll_sharpe
 
 
-# =========================================
-# 10. Monte Carlo risk simulation (block bootstrap, vectorized + batched)
-#
-# At 1M+ simulations, the original per-path Python loop (building each path
-# with a while-loop + pandas Series.std() per path) does not scale -- it
-# would take hours. This version generates and scores each batch of paths
-# as numpy arrays in one shot (no per-path Python-level loop), and only
-# keeps a small subsample of full paths (MC_FAN_CHART_SAMPLE) for plotting,
-# since a fan chart's percentile bands converge long before 1M paths.
-# Only the three scalar metrics (terminal return, Sharpe, max drawdown) are
-# retained for all n_sims paths -- that's 3 arrays of length n_sims, trivial
-# memory even at a million sims.
-# =========================================
+# --- monte carlo (block bootstrap) ---
+# first pass at this used a python while-loop per path with a pandas
+# .std() call each time -- fine at a few thousand sims, but at 1M+ it
+# would've taken hours. this version does everything as batched numpy
+# arrays instead. also no reason to hang onto all 1M full paths just for
+# the fan chart -- the percentile bands converge way before that, so only
+# a small subsample (MC_FAN_CHART_SAMPLE) gets kept for plotting. the
+# scalar metrics (terminal return, sharpe, mdd) are cheap to keep for
+# every single path though.
 def monte_carlo_simulate(daily_returns, n_sims=MC_SIMULATIONS, block_size=MC_BLOCK_SIZE,
                           batch_size=MC_BATCH_SIZE, fan_sample=MC_FAN_CHART_SAMPLE,
                           rf=risk_free_rate):
@@ -409,9 +362,7 @@ def print_mc_report(summary, realized_terminal_return, realized_sharpe, realized
     print(f"  CVaR(95%) on terminal return               : {cvar95:.2%}")
 
 
-# =========================================
-# 11. SQLite persistence
-# =========================================
+# --- save everything to sqlite ---
 def save_to_sql(prices, monthly_weights, cost_table, portfolio_returns, net_returns,
                  spy_returns, liquidity_df, mc_summary, db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
@@ -450,9 +401,7 @@ def save_to_sql(prices, monthly_weights, cost_table, portfolio_returns, net_retu
     print(f"\nSaved results to SQLite DB at: {db_path}")
 
 
-# =========================================
-# 12. Main
-# =========================================
+# --- main ---
 def main():
     prices, volume = download_data()
     returns, rel_mom, vol20, abs_mom_blend = compute_signals(prices)
@@ -485,7 +434,7 @@ def main():
     net_mdd = max_drawdown(net_cum)
     spy_mdd = max_drawdown(spy_cum)
 
-    print("\n===== Performance Comparison (Gross vs Net-of-Cost vs SPY) — v4 enhanced =====")
+    print("\n===== Performance Comparison (Gross vs Net-of-Cost vs SPY), v4 =====")
     print(f"{'Metric':<20}{'Gross':>12}{'Net-of-Cost':>14}{'SPY':>12}")
     print(f"{'Total Return':<20}{index_return:>12.2%}{net_return:>14.2%}{spy_return:>12.2%}")
     print(f"{'Sharpe Ratio':<20}{index_sharpe:>12.2f}{net_sharpe:>14.2f}{spy_sharpe:>12.2f}")
@@ -505,12 +454,12 @@ def main():
         pct_negative = (roll_return_valid < 0).mean()
         print(f"Share of rolling 24M windows with a negative annualized return: {pct_negative:.1%}")
 
-    # Rolling 1Y Sharpe for strategy vs SPY -- matches the comparison plots
-    # from the original script (Figures 1-3), which this version had dropped.
+    # rolling 1y sharpe vs spy -- an earlier version of this script had
+    # dropped these plots, adding them back here
     _, roll_sharpe_1y = rolling_24m_stats(net_returns, window_days=252)
     _, roll_sharpe_1y_spy = rolling_24m_stats(spy_returns, window_days=252)
 
-    # Drawdown series (full history, not just the min) for the same comparison.
+    # full drawdown series, not just the min, for the same plots
     drawdown_net = net_cum / net_cum.cummax() - 1
     drawdown_spy = spy_cum / spy_cum.cummax() - 1
 

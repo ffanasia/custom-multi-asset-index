@@ -1,50 +1,51 @@
-# Custom Multi-Asset Index Construction
+# multi-asset momentum index
 
-## Overview
-This project builds a custom equity index using factor-based portfolio construction. The index selects and weights securities based on momentum and market capitalization, with systematic monthly rebalancing.
+Quick project testing whether a simple momentum-based portfolio could keep pace
+with SPY on a risk-adjusted basis, without doing anything exotic — just monthly
+rebalancing across a handful of liquid ETFs.
 
-## Key Features
-- Analyzed 30+ equities using 2+ years of historical data
-- Implemented momentum-based signal generation
-- Designed market-cap weighted portfolio construction
-- Monthly rebalancing across 24+ periods
-- Performance benchmarking vs S&P 500
+## what it does
 
-## Methodology
+Picks between SPY/TLT/GLD/QQQ/EEM (or a wider 30-ETF universe in the `_30`
+version) based on trailing momentum, rebalances monthly, and falls back to a
+defensive basket (TLT/GLD/cash) when nothing looks good. `multi_asset_v4.py`
+is the version I'd actually stand behind — it accounts for transaction costs,
+checks liquidity against 20-day ADV, and runs a block-bootstrap Monte Carlo
+(1M paths) instead of trusting a single backtest run.
 
-### 1. Data Processing
-- Collected historical price data
-- Cleaned and aligned time series
-- Computed returns and rolling metrics
+## how it works, roughly
 
-### 2. Signal Generation
-- Momentum factor based on past returns
-- Ranked securities based on signal strength
+1. pull price history via `yfinance`
+2. build a momentum signal (blended 3/6/12 month returns for the gate, 12
+   month for ranking)
+3. every month, rank whatever passes the gate and hold the top few, sized
+   inverse to recent volatility
+4. weights lag by a day so there's no lookahead
+5. everything (prices, weights, trades, performance, liquidity, MC results)
+   gets written to sqlite
 
-### 3. Portfolio Construction
-- Selected top 10 securities per rebalance period
-- Weighted portfolio using market capitalization
+## results (v4, 2015-2024)
 
-### 4. Rebalancing Strategy
-- Monthly portfolio updates
-- Adjusted weights dynamically based on signals
+Sharpe ~0.65 vs SPY's ~0.67, but max drawdown of -22% vs SPY's -34%. Total
+return trails SPY somewhat, which tracks — running at ~13.6% annualized vol
+vs. SPY's ~17.6% is going to cost some upside, that's not a bug.
 
-### 5. Performance Evaluation
-- Total returns
-- Sharpe ratio
-- Maximum drawdown
+## running it
 
-## Results
-- Built a systematic index with dynamic allocation
-- Demonstrated factor-driven portfolio behavior
-- Compared performance against S&P 500 benchmark
+Needs internet access (yfinance):
 
-## Tech Stack
-- Python (Pandas, NumPy)
-- Matplotlib / Seaborn
-- Time Series Analysis
+```
+python multi_asset_v4.py
+```
 
-## Future Improvements
-- Add risk parity weighting
-- Incorporate multi-factor signals (value, volatility)
-- Backtest with transaction costs
+Saves plots as PNGs and writes results to `backtest_v4.db`.
+
+## what's in here
+
+- `multi_asset_v4.py` — the real version, 5 assets
+- `multi_asset_30.py` / `assets.py` — same strategy, wider universe, still
+  deciding whether this is worth making the "main" version
+- `weights_momentum_analysis.xlsx` — per-asset breakdown of gate pass rate,
+  selection rate, avg weight — useful for sanity-checking the signal
+- `archive/` — earlier drafts and one-off chart exports, kept around instead
+  of deleted
