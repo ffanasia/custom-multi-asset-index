@@ -6,12 +6,12 @@ rebalancing across a handful of liquid ETFs.
 
 ## what it does
 
-Picks between SPY/TLT/GLD/QQQ/EEM (or a wider 30-ETF universe in the `_30`
-version) based on trailing momentum, rebalances monthly, and falls back to a
-defensive basket (TLT/GLD/cash) when nothing looks good. `multi_asset_v4.py`
-is the version I'd actually stand behind — it accounts for transaction costs,
-checks liquidity against 20-day ADV, and runs a block-bootstrap Monte Carlo
-(1M paths) instead of trusting a single backtest run.
+Picks between SPY/TLT/GLD/QQQ/EEM based on trailing momentum, rebalances
+monthly, and falls back to a defensive basket (TLT/GLD/cash) when nothing
+looks good. `multi_asset_v4.py` is the version I'd actually stand behind — it
+accounts for transaction costs, checks liquidity against 20-day ADV, and runs
+a block-bootstrap Monte Carlo (1M paths) instead of trusting a single
+backtest run. This is the version behind the site and resume.
 
 ## how it works, roughly
 
@@ -30,6 +30,10 @@ Sharpe ~0.65 vs SPY's ~0.67, but max drawdown of -22% vs SPY's -34%. Total
 return trails SPY somewhat, which tracks — running at ~13.6% annualized vol
 vs. SPY's ~17.6% is going to cost some upside, that's not a bug.
 
+Extended validation (walk-forward, ablation, cost sensitivity, regime
+breakdown, block-bootstrap significance, deflated Sharpe ratio) lives in
+`extended_validation_v4.py` / `extended_validation_results.md`.
+
 ## running it
 
 Needs internet access (yfinance):
@@ -42,10 +46,18 @@ Saves plots as PNGs and writes results to `backtest_v4.db`.
 
 ## what's in here
 
-- `multi_asset_v4.py` — the real version, 5 assets
-- `multi_asset_30.py` / `assets.py` — same strategy, wider universe, still
-  deciding whether this is worth making the "main" version
+- `multi_asset_v4.py` — the real version, 5 assets, published
 - `weights_momentum_analysis.xlsx` — per-asset breakdown of gate pass rate,
   selection rate, avg weight — useful for sanity-checking the signal
-- `archive/` — earlier drafts and one-off chart exports, kept around instead
-  of deleted
+- `archive/` — earlier drafts (`multi_asset.py`, `multi_asset_2.py`) and
+  one-off chart exports of *this* project, kept around instead of deleted.
+  `archive/_git_cleanup/` holds the live `performance_export.csv` the site
+  and charts actually read from — the name is historical, not a sign it's
+  disposable; `_to_delete/` inside it is genuinely disposable git-lock
+  debris from a past repo recovery.
+- `experiments/30-asset-universe/` — same v4 strategy, run against a much
+  wider 30-ETF universe instead. Never published; see its README for why.
+- `other-projects/equal-weight-index/` — a completely different, unrelated
+  side project (equal-weight SPY/TLT/GLD/VNQ/DBC, no momentum, no cost
+  model, live-updating). Not comparable to the numbers above — see its
+  README before citing anything from it.
