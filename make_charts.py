@@ -15,6 +15,14 @@ PALETTES = {
                   SIGNAL="#6fa383", GRID="#2b322d", AXIS="#3c453d"),
 }
 
+# these charts are displayed at ~380-680px wide in the actual page layout, far
+# smaller than a typical matplotlib default render -- so type sizes here are set
+# for legibility at THAT display size, not for a full-bleed standalone image.
+TICK_FS   = 21
+LABEL_FS  = 24
+LEGEND_FS = 20
+VALUE_FS  = 20
+
 df = pd.read_csv("/mnt/user-data/uploads/Desktop/S&P project/archive/_git_cleanup/performance_export.csv",
                   parse_dates=["date"])
 df = df.set_index("date").sort_index()
@@ -69,9 +77,9 @@ for theme, pal in PALETTES.items():
         "ytick.color": INK_SOFT,
         "axes.grid": True,
         "grid.color": GRID,
-        "grid.linewidth": 0.7,
-        "axes.linewidth": 0.8,
-        "font.size": 12,
+        "grid.linewidth": 1.0,
+        "axes.linewidth": 1.3,
+        "font.size": LABEL_FS,
     })
 
     def style_ax(ax):
@@ -79,66 +87,66 @@ for theme, pal in PALETTES.items():
             ax.spines[spine].set_visible(False)
         for spine in ["left", "bottom"]:
             ax.spines[spine].set_color(AXIS)
-        ax.tick_params(labelsize=10.5, length=3)
+        ax.tick_params(labelsize=TICK_FS, length=5, width=1.2)
         ax.xaxis.set_major_locator(mdates.YearLocator(2))
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
         ax.grid(True, axis="y", alpha=0.9)
         ax.grid(False, axis="x")
 
     # Fig 1 -- growth of $1, gross vs net vs SPY
-    fig, ax = plt.subplots(figsize=(9.6, 4.6), dpi=180)
-    ax.plot(df.index, df["cum_gross"], color=INK_SOFT, linewidth=1.6, linestyle=(0, (1, 1.4)), label="Strategy (gross)")
-    ax.plot(df.index, df["cum_net"], color=INK, linewidth=2.2, label="Strategy (net of cost)")
-    ax.plot(df.index, df["cum_spy"], color=ACCENT, linewidth=2.0, label="SPY")
-    ax.set_ylabel("Growth of $1")
+    fig, ax = plt.subplots(figsize=(9.0, 5.6), dpi=150)
+    ax.plot(df.index, df["cum_gross"], color=INK_SOFT, linewidth=2.4, linestyle=(0, (1, 1.6)), label="Gross")
+    ax.plot(df.index, df["cum_net"], color=INK, linewidth=3.4, label="Net of cost")
+    ax.plot(df.index, df["cum_spy"], color=ACCENT, linewidth=3.0, label="SPY")
+    ax.set_ylabel("Growth of $1", fontsize=LABEL_FS)
     style_ax(ax)
-    ax.legend(frameon=False, fontsize=10.5, loc="upper left", handlelength=1.6, labelcolor=INK)
+    ax.legend(frameon=False, fontsize=LEGEND_FS, loc="upper left", handlelength=1.4, labelcolor=INK)
     fig.tight_layout()
-    fig.savefig(OUT + f"fig1_growth_{theme}.png", dpi=180, transparent=True)
+    fig.savefig(OUT + f"fig1_growth_{theme}.png", dpi=150, transparent=True)
     plt.close(fig)
 
     # Fig 2 -- drawdown, net vs SPY
-    fig, ax = plt.subplots(figsize=(9.6, 4.0), dpi=180)
-    ax.fill_between(df.index, dd_net * 100, 0, color=SIGNAL, alpha=0.2, linewidth=0)
-    ax.plot(df.index, dd_net * 100, color=SIGNAL, linewidth=2.0, label="Strategy (net)")
-    ax.plot(df.index, dd_spy * 100, color=ACCENT, linewidth=1.6, alpha=0.9, label="SPY")
-    ax.set_ylabel("Drawdown (%)")
+    fig, ax = plt.subplots(figsize=(9.0, 5.0), dpi=150)
+    ax.fill_between(df.index, dd_net * 100, 0, color=SIGNAL, alpha=0.22, linewidth=0)
+    ax.plot(df.index, dd_net * 100, color=SIGNAL, linewidth=3.0, label="Strategy")
+    ax.plot(df.index, dd_spy * 100, color=ACCENT, linewidth=2.4, alpha=0.9, label="SPY")
+    ax.set_ylabel("Drawdown (%)", fontsize=LABEL_FS)
     style_ax(ax)
-    ax.legend(frameon=False, fontsize=10.5, loc="lower left", handlelength=1.6, labelcolor=INK)
+    ax.legend(frameon=False, fontsize=LEGEND_FS, loc="lower left", handlelength=1.4, labelcolor=INK)
     fig.tight_layout()
-    fig.savefig(OUT + f"fig2_drawdown_{theme}.png", dpi=180, transparent=True)
+    fig.savefig(OUT + f"fig2_drawdown_{theme}.png", dpi=150, transparent=True)
     plt.close(fig)
 
     # Fig 3 -- rolling 1y sharpe, net vs SPY
-    fig, ax = plt.subplots(figsize=(9.6, 4.0), dpi=180)
-    ax.axhline(0, color=AXIS, linewidth=0.8, linestyle=(0, (2, 2)))
-    ax.plot(df.index, roll_net_cache, color=INK, linewidth=2.0, label="Strategy (net)")
-    ax.plot(df.index, roll_spy_cache, color=ACCENT, linewidth=1.8, label="SPY")
-    ax.set_ylabel("Rolling 1Y Sharpe")
+    fig, ax = plt.subplots(figsize=(9.0, 5.0), dpi=150)
+    ax.axhline(0, color=AXIS, linewidth=1.2, linestyle=(0, (2, 2)))
+    ax.plot(df.index, roll_net_cache, color=INK, linewidth=3.0, label="Strategy")
+    ax.plot(df.index, roll_spy_cache, color=ACCENT, linewidth=2.6, label="SPY")
+    ax.set_ylabel("Rolling 1Y Sharpe", fontsize=LABEL_FS)
     style_ax(ax)
-    ax.legend(frameon=False, fontsize=10.5, loc="upper left", handlelength=1.6, labelcolor=INK)
+    ax.legend(frameon=False, fontsize=LEGEND_FS, loc="upper left", handlelength=1.4, labelcolor=INK)
     fig.tight_layout()
-    fig.savefig(OUT + f"fig3_sharpe_{theme}.png", dpi=180, transparent=True)
+    fig.savefig(OUT + f"fig3_sharpe_{theme}.png", dpi=150, transparent=True)
     plt.close(fig)
 
     # Fig 4 -- monte carlo block-bootstrap fan chart
-    fig, ax = plt.subplots(figsize=(9.6, 4.6), dpi=180)
+    fig, ax = plt.subplots(figsize=(9.0, 5.6), dpi=150)
     ax.fill_between(x_days, pct_bands[0], pct_bands[4], color=ACCENT, alpha=0.18, linewidth=0, label="5th–95th pct")
-    ax.fill_between(x_days, pct_bands[1], pct_bands[3], color=ACCENT, alpha=0.32, linewidth=0, label="25th–75th pct")
-    ax.plot(x_days, pct_bands[2], color=ACCENT, linewidth=1.4, linestyle=(0, (1, 1.4)), label="Median simulated path")
-    ax.plot(x_days, realized, color=INK, linewidth=2.2, label="Realized (net of cost)")
-    ax.set_ylabel("Growth of $1")
-    ax.set_xlabel("Trading day")
+    ax.fill_between(x_days, pct_bands[1], pct_bands[3], color=ACCENT, alpha=0.34, linewidth=0, label="25th–75th pct")
+    ax.plot(x_days, pct_bands[2], color=ACCENT, linewidth=2.0, linestyle=(0, (1, 1.6)), label="Median sim.")
+    ax.plot(x_days, realized, color=INK, linewidth=3.2, label="Realized")
+    ax.set_ylabel("Growth of $1", fontsize=LABEL_FS)
+    ax.set_xlabel("Trading day", fontsize=LABEL_FS)
     for spine in ["top", "right"]:
         ax.spines[spine].set_visible(False)
     for spine in ["left", "bottom"]:
         ax.spines[spine].set_color(AXIS)
-    ax.tick_params(labelsize=10.5, length=3)
-    ax.grid(True, axis="y", color=GRID, linewidth=0.7)
+    ax.tick_params(labelsize=TICK_FS, length=5, width=1.2)
+    ax.grid(True, axis="y", color=GRID, linewidth=1.0)
     ax.grid(False, axis="x")
-    ax.legend(frameon=False, fontsize=10, loc="upper left", handlelength=1.6, labelcolor=INK)
+    ax.legend(frameon=False, fontsize=LEGEND_FS - 2, loc="upper left", handlelength=1.4, labelcolor=INK, ncol=1)
     fig.tight_layout()
-    fig.savefig(OUT + f"fig4_montecarlo_{theme}.png", dpi=180, transparent=True)
+    fig.savefig(OUT + f"fig4_montecarlo_{theme}.png", dpi=150, transparent=True)
     plt.close(fig)
 
 print("done")
