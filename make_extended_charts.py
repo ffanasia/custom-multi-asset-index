@@ -59,7 +59,7 @@ for theme, pal in PALETTES.items():
     labels = ["Naive", "+ vol\nsizing", "+ defensive\nfallback", "+ trans.\ncosts"]
     XTICK_FS = 16
 
-    fig, axes = plt.subplots(2, 1, figsize=(8.6, 10.0), dpi=150)
+    fig, axes = plt.subplots(2, 1, figsize=(8.6, 6.6), dpi=150)
     x = np.arange(len(ab))
 
     ax = axes[0]
@@ -90,7 +90,7 @@ for theme, pal in PALETTES.items():
     # Fig 6 -- cost sensitivity
     # ---------------------------------------------------------------
     cs = pd.DataFrame(R["cost_sensitivity"])
-    fig, ax = plt.subplots(figsize=(8.0, 6.0), dpi=150)
+    fig, ax = plt.subplots(figsize=(8.0, 4.6), dpi=150)
     ax2 = ax.twinx()
     l1, = ax.plot(cs["cost_bps"], cs["sharpe"], color=INK, linewidth=3.0, marker="o", markersize=7, label="Sharpe")
     l2, = ax2.plot(cs["cost_bps"], cs["max_drawdown"] * 100, color=ACCENT, linewidth=2.6, marker="o", markersize=7,
@@ -116,7 +116,7 @@ for theme, pal in PALETTES.items():
     # ---------------------------------------------------------------
     rg = pd.DataFrame(R["regimes"])
     short_labels = ["Pre-2019", "2019–20", "COVID\ncrash", "COVID\nrecovery", "2022\nbear", "2023–24"]
-    fig, ax = plt.subplots(figsize=(9.2, 6.4), dpi=150)
+    fig, ax = plt.subplots(figsize=(9.2, 5.0), dpi=150)
     x = np.arange(len(rg))
     w = 0.36
     b1 = ax.bar(x - w/2, rg["strategy_return"] * 100, width=w, color=INK, label="Strategy")
@@ -147,7 +147,7 @@ for theme, pal in PALETTES.items():
     spy_test_sharpe = R["walk_forward"]["spy_test_sharpe"]
     fit_w = R["walk_forward"]["fit_period_winner"]
 
-    fig, ax = plt.subplots(figsize=(8.6, 7.6), dpi=150)
+    fig, ax = plt.subplots(figsize=(8.6, 5.6), dpi=150)
     ax.errorbar(wf["window_days"], wf["fit_sharpe"], yerr=wf["fit_se"], color=INK_SOFT, linewidth=2.2,
                 marker="o", markersize=6, linestyle=(0, (3, 2)), capsize=4, elinewidth=1.2,
                 label="Fit period (2016–19)")
@@ -176,7 +176,7 @@ for theme, pal in PALETTES.items():
     widths = np.diff(edges)
     centers_bins = edges[:-1] + widths / 2
 
-    fig, ax = plt.subplots(figsize=(8.4, 6.2), dpi=150)
+    fig, ax = plt.subplots(figsize=(8.4, 4.8), dpi=150)
     ax.bar(centers_bins, counts, width=widths, color=INK_SOFT, alpha=0.85, linewidth=0)
     ax.axvline(0, color=AXIS, linewidth=1.6, label="Zero")
     ax.axvline(ci_lo, color=ACCENT, linewidth=2.0, linestyle=(0, (4, 2)), label="95% CI")
@@ -199,7 +199,7 @@ for theme, pal in PALETTES.items():
     ds = R["deflated_sharpe"]
     sweep = pd.DataFrame(ds["sweep"])
 
-    fig, axes = plt.subplots(2, 1, figsize=(7.8, 10.4), dpi=150)
+    fig, axes = plt.subplots(2, 1, figsize=(7.6, 6.6), dpi=150)
 
     ax = axes[0]
     ax.plot(sweep["N"], sweep["sr0_annualized"], color=ACCENT, linewidth=2.6, marker="o", markersize=6,
@@ -207,7 +207,7 @@ for theme, pal in PALETTES.items():
     ax.axhline(ds["sr_hat_annualized"], color=INK, linewidth=2.2, linestyle=(0, (4, 2)),
                label=f"Observed ({ds['sr_hat_annualized']:.2f})")
     ax.set_xscale("log")
-    ax.set_ylim(top=ax.get_ylim()[1] + 0.1)
+    ax.set_ylim(top=ds["sr_hat_annualized"] + 0.38)
     ax.set_xlabel("Assumed trials (N)", fontsize=LABEL_FS - 2)
     ax.set_ylabel("Sharpe (ann.)", fontsize=LABEL_FS - 2)
     ax.set_title("Best-of-N Sharpe by chance", fontsize=TITLE_FS, color=INK)

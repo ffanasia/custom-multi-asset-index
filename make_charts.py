@@ -94,7 +94,7 @@ for theme, pal in PALETTES.items():
         ax.grid(False, axis="x")
 
     # Fig 1 -- growth of $1, gross vs net vs SPY
-    fig, ax = plt.subplots(figsize=(9.0, 5.6), dpi=150)
+    fig, ax = plt.subplots(figsize=(9.0, 4.6), dpi=150)
     ax.plot(df.index, df["cum_gross"], color=INK_SOFT, linewidth=2.4, linestyle=(0, (1, 1.6)), label="Gross")
     ax.plot(df.index, df["cum_net"], color=INK, linewidth=3.4, label="Net of cost")
     ax.plot(df.index, df["cum_spy"], color=ACCENT, linewidth=3.0, label="SPY")
@@ -106,7 +106,7 @@ for theme, pal in PALETTES.items():
     plt.close(fig)
 
     # Fig 2 -- drawdown, net vs SPY
-    fig, ax = plt.subplots(figsize=(9.0, 5.0), dpi=150)
+    fig, ax = plt.subplots(figsize=(9.0, 4.2), dpi=150)
     ax.fill_between(df.index, dd_net * 100, 0, color=SIGNAL, alpha=0.22, linewidth=0)
     ax.plot(df.index, dd_net * 100, color=SIGNAL, linewidth=3.0, label="Strategy")
     ax.plot(df.index, dd_spy * 100, color=ACCENT, linewidth=2.4, alpha=0.9, label="SPY")
@@ -118,19 +118,20 @@ for theme, pal in PALETTES.items():
     plt.close(fig)
 
     # Fig 3 -- rolling 1y sharpe, net vs SPY
-    fig, ax = plt.subplots(figsize=(9.0, 5.0), dpi=150)
+    fig, ax = plt.subplots(figsize=(9.0, 4.2), dpi=150)
     ax.axhline(0, color=AXIS, linewidth=1.2, linestyle=(0, (2, 2)))
     ax.plot(df.index, roll_net_cache, color=INK, linewidth=3.0, label="Strategy")
     ax.plot(df.index, roll_spy_cache, color=ACCENT, linewidth=2.6, label="SPY")
     ax.set_ylabel("Rolling 1Y Sharpe", fontsize=LABEL_FS)
     style_ax(ax)
+    ax.set_ylim(top=ax.get_ylim()[1] + 1.3)
     ax.legend(frameon=False, fontsize=LEGEND_FS, loc="upper left", handlelength=1.4, labelcolor=INK)
     fig.tight_layout()
     fig.savefig(OUT + f"fig3_sharpe_{theme}.png", dpi=150, transparent=True)
     plt.close(fig)
 
     # Fig 4 -- monte carlo block-bootstrap fan chart
-    fig, ax = plt.subplots(figsize=(9.0, 5.6), dpi=150)
+    fig, ax = plt.subplots(figsize=(9.0, 4.6), dpi=150)
     ax.fill_between(x_days, pct_bands[0], pct_bands[4], color=ACCENT, alpha=0.18, linewidth=0, label="5th–95th pct")
     ax.fill_between(x_days, pct_bands[1], pct_bands[3], color=ACCENT, alpha=0.34, linewidth=0, label="25th–75th pct")
     ax.plot(x_days, pct_bands[2], color=ACCENT, linewidth=2.0, linestyle=(0, (1, 1.6)), label="Median sim.")
