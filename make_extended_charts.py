@@ -28,7 +28,7 @@ TITLE_FS  = 21
 with open("extended_results.json") as f:
     R = json.load(f)
 
-OUT = "/home/claude/extended_analysis/"
+OUT = "themed_charts/"
 
 for theme, pal in PALETTES.items():
     INK, INK_SOFT, ACCENT, SIGNAL, GRID, AXIS = (

@@ -23,11 +23,18 @@ LABEL_FS  = 24
 LEGEND_FS = 20
 VALUE_FS  = 20
 
-df = pd.read_csv("/mnt/user-data/uploads/Desktop/S&P project/archive/_git_cleanup/performance_export.csv",
-                  parse_dates=["date"])
+import sqlite3
+con = sqlite3.connect("backtest_v4.db")
+df = pd.read_sql(
+    "SELECT Date as date, portfolio_return_net as ret_net, benchmark_return as ret_spy, "
+    "portfolio_cum_gross as cum_gross, portfolio_cum_net as cum_net, benchmark_cum as cum_spy "
+    "FROM performance",
+    con, parse_dates=["date"],
+)
+con.close()
 df = df.set_index("date").sort_index()
 
-OUT = "/home/claude/sp_site/"
+OUT = "themed_charts/"
 
 RF = 0.02
 def sharpe_ratio(r, rf=RF):

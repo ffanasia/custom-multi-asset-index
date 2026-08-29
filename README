@@ -51,10 +51,12 @@ Saves plots as PNGs and writes results to `backtest_v4.db`.
   selection rate, avg weight — useful for sanity-checking the signal
 - `archive/` — earlier drafts (`multi_asset.py`, `multi_asset_2.py`) and
   one-off chart exports of *this* project, kept around instead of deleted.
-  `archive/_git_cleanup/` holds the live `performance_export.csv` the site
-  and charts actually read from — the name is historical, not a sign it's
-  disposable; `_to_delete/` inside it is genuinely disposable git-lock
-  debris from a past repo recovery.
+  `archive/_git_cleanup/` is genuinely disposable git-lock debris from a
+  past repo recovery and is gitignored on purpose.
+- `make_charts.py` / `make_extended_charts.py` — regenerate the site's
+  charts (`themed_charts/*.png`) straight from `backtest_v4.db` and
+  `extended_results.json`, both committed here — no external file needed,
+  just `python make_charts.py` / `python make_extended_charts.py`.
 - `experiments/30-asset-universe/` — same v4 strategy, run against a much
   wider 30-ETF universe instead. Never published; see its README for why.
 - `other-projects/equal-weight-index/` — a completely different, unrelated
