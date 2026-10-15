@@ -43,22 +43,13 @@ def sharpe_ratio(r, rf=RF):
 roll_net_cache = df["ret_net"].rolling(252).apply(lambda x: sharpe_ratio(pd.Series(x)), raw=False)
 roll_spy_cache = df["ret_spy"].rolling(252).apply(lambda x: sharpe_ratio(pd.Series(x)), raw=False)
 
-np.random.seed(42)
-r_arr = df["ret_net"].dropna().values
-n = len(r_arr)
-block_size = 20
-n_sims = 20000
-fan_sample = 2000
-n_blocks = int(np.ceil(n / block_size))
-offsets = np.arange(block_size)
-starts = np.random.randint(0, n - block_size + 1, size=(n_sims, n_blocks))
-idx = starts[:, :, None] + offsets[None, None, :]
-batch = r_arr[idx].reshape(n_sims, n_blocks * block_size)[:, :n]
-cum = np.cumprod(1 + batch, axis=1)
-fan_paths = cum[:fan_sample]
-pct_bands = np.percentile(fan_paths, [5, 25, 50, 75, 95], axis=0)
-realized = (1 + r_arr).cumprod()
-x_days = np.arange(n)
+fan = pd.read_sql(
+    "SELECT day, p5, p25, p50, p75, p95 FROM monte_carlo_fan ORDER BY day",
+    sqlite3.connect("backtest_v4.db"),
+)
+pct_bands = fan[["p5", "p25", "p50", "p75", "p95"]].to_numpy().T
+x_days = fan["day"].to_numpy()
+realized = df["cum_net"].to_numpy()
 
 dd_net = df["cum_net"] / df["cum_net"].cummax() - 1
 dd_spy = df["cum_spy"] / df["cum_spy"].cummax() - 1

@@ -524,7 +524,8 @@ def print_forecast(summary):
     y1 = summary["return_1y"]
     term = summary["terminal_return"]
     worst = y1[y1 <= np.percentile(y1, 5)]
-    print(f"  P(1y loss) {np.mean(y1 < 0):.1%}    P(5y loss) {np.mean(term < 0):.1%}")
+    print(f"  share of paths with a 1y loss: {np.mean(y1 < 0):.1%}")
+    print(f"  share of paths with a 5y loss: {np.mean(term < 0):.1%}")
     print(f"  mean of the worst 5% of 1y returns: {worst.mean():.2%}")
 
 
@@ -642,7 +643,7 @@ def save_forecast_plots(fan, summary, future_idx, realized_1y):
 
 # --- save everything to sqlite ---
 def save_to_sql(prices, monthly_weights, cost_table, portfolio_returns, net_returns,
-                 spy_returns, liquidity_df, mc_summary, db_path=DB_PATH):
+                 spy_returns, liquidity_df, mc_summary, mc_fan=None, db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
 
     prices.reset_index().melt(id_vars=prices.index.name or "index",
@@ -673,6 +674,17 @@ def save_to_sql(prices, monthly_weights, cost_table, portfolio_returns, net_retu
 
     mc_df = pd.DataFrame(mc_summary)
     mc_df.to_sql("monte_carlo_results", conn, if_exists="replace", index=False)
+
+    if mc_fan is not None:
+        bands = np.percentile(mc_fan, [5, 25, 50, 75, 95], axis=0)
+        pd.DataFrame({
+            "day": np.arange(bands.shape[1]),
+            "p5": bands[0],
+            "p25": bands[1],
+            "p50": bands[2],
+            "p75": bands[3],
+            "p95": bands[4],
+        }).to_sql("monte_carlo_fan", conn, if_exists="replace", index=False)
 
     conn.commit()
     conn.close()
@@ -762,7 +774,21 @@ def main():
     save_forecast_plots(fc_fan, fc_summary, future_idx, realized_1y)
 
     save_to_sql(prices, monthly_weights, cost_table, portfolio_returns, net_returns,
-                spy_returns, liquidity_df, mc_summary)
+                spy_returns, liquidity_df, mc_summary, mc_fan=mc_cum_paths)
+
+    plt.figure(figsize=(12, 6))
+    pct_bands = np.percentile(mc_cum_paths, [5, 25, 50, 75, 95], axis=0)
+    x = np.arange(mc_cum_paths.shape[1])
+    plt.fill_between(x, pct_bands[0], pct_bands[4], color="steelblue", alpha=0.2, label="5th-95th pct")
+    plt.fill_between(x, pct_bands[1], pct_bands[3], color="steelblue", alpha=0.35, label="25th-75th pct")
+    plt.plot(x, pct_bands[2], color="steelblue", linewidth=1.5, label="Median path")
+    plt.plot(x, net_cum.values, color="black", linewidth=2, label="Realized")
+    plt.title(f"Rule rerun on {STRATEGY_BLOCK}-day blocks "
+              f"({MC_SIMULATIONS:,} paths, {mc_cum_paths.shape[0]:,} drawn)")
+    plt.xlabel("Trading day"); plt.ylabel("Growth of $1")
+    plt.legend(); plt.grid(True); plt.tight_layout()
+    plt.savefig("monte_carlo_fan_chart_v4.png", dpi=120)
+    plt.close()
 
     plt.figure(figsize=(12, 6))
     plt.plot(portfolio_cum, label="Gross", linewidth=2)
