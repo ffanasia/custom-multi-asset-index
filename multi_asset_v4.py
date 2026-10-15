@@ -159,6 +159,17 @@ def apply_weights(monthly_weights, returns_ext):
     return weights
 
 
+def equal_weight_returns(prices, valid_dates, returns):
+    """Same five ETFs, equal weight, same month-ends, lag, and cost."""
+    cols = list(prices.columns)
+    monthly = pd.DataFrame(0.0, index=valid_dates, columns=cols)
+    monthly[cols] = 1.0 / len(cols)
+    daily = apply_weights(monthly, returns)
+    gross = (daily * returns).sum(axis=1)
+    costs = transaction_costs(monthly)
+    return apply_costs_to_returns(gross, costs, returns.index)
+
+
 def build_extended_returns(returns):
     """cash earns rf/252 per day."""
     returns_ext = returns.copy()
@@ -701,7 +712,7 @@ def main():
     returns_ext = build_extended_returns(returns)
     weights = apply_weights(monthly_weights, returns_ext)
     portfolio_returns = (weights * returns_ext).sum(axis=1)
-    spy_returns = returns[benchmark]
+    bench_returns = equal_weight_returns(prices, valid_dates, returns)
 
     cost_table = transaction_costs(monthly_weights)
     net_returns = apply_costs_to_returns(portfolio_returns, cost_table, returns_ext.index)
@@ -710,25 +721,25 @@ def main():
 
     portfolio_cum = (1 + portfolio_returns).cumprod()
     net_cum = (1 + net_returns).cumprod()
-    spy_cum = (1 + spy_returns).cumprod()
+    bench_cum = (1 + bench_returns).cumprod()
 
     index_return = portfolio_cum.iloc[-1] - 1
     net_return = net_cum.iloc[-1] - 1
-    spy_return = spy_cum.iloc[-1] - 1
+    bench_return = bench_cum.iloc[-1] - 1
 
     index_sharpe = sharpe_ratio(portfolio_returns, risk_free_rate)
     net_sharpe = sharpe_ratio(net_returns, risk_free_rate)
-    spy_sharpe = sharpe_ratio(spy_returns, risk_free_rate)
+    bench_sharpe = sharpe_ratio(bench_returns, risk_free_rate)
 
     index_mdd = max_drawdown(portfolio_cum)
     net_mdd = max_drawdown(net_cum)
-    spy_mdd = max_drawdown(spy_cum)
+    bench_mdd = max_drawdown(bench_cum)
 
-    print("\ngross vs net vs spy")
-    print(f"{'Metric':<20}{'Gross':>12}{'Net-of-Cost':>14}{'SPY':>12}")
-    print(f"{'Total Return':<20}{index_return:>12.2%}{net_return:>14.2%}{spy_return:>12.2%}")
-    print(f"{'Sharpe Ratio':<20}{index_sharpe:>12.2f}{net_sharpe:>14.2f}{spy_sharpe:>12.2f}")
-    print(f"{'Max Drawdown':<20}{index_mdd:>12.2%}{net_mdd:>14.2%}{spy_mdd:>12.2%}")
+    print("\ngross vs net vs equal weight")
+    print(f"{'Metric':<20}{'Gross':>12}{'Net-of-Cost':>14}{'Equal wt':>12}")
+    print(f"{'Total Return':<20}{index_return:>12.2%}{net_return:>14.2%}{bench_return:>12.2%}")
+    print(f"{'Sharpe Ratio':<20}{index_sharpe:>12.2f}{net_sharpe:>14.2f}{bench_sharpe:>12.2f}")
+    print(f"{'Max Drawdown':<20}{index_mdd:>12.2%}{net_mdd:>14.2%}{bench_mdd:>12.2%}")
     total_cost_drag = cost_table["cost_drag"].sum()
     print(f"\nCumulative cost drag from turnover: {total_cost_drag:.2%} "
           f"(~${(total_cost_drag * PORTFOLIO_NOTIONAL):,.0f} on ${PORTFOLIO_NOTIONAL:,.0f} notional)")
@@ -745,10 +756,10 @@ def main():
         print(f"Share of rolling 24M windows with a negative annualized return: {pct_negative:.1%}")
 
     _, roll_sharpe_1y = rolling_24m_stats(net_returns, window_days=252)
-    _, roll_sharpe_1y_spy = rolling_24m_stats(spy_returns, window_days=252)
+    _, roll_sharpe_1y_bench = rolling_24m_stats(bench_returns, window_days=252)
 
     drawdown_net = net_cum / net_cum.cummax() - 1
-    drawdown_spy = spy_cum / spy_cum.cummax() - 1
+    drawdown_bench = bench_cum / bench_cum.cummax() - 1
 
     # the vectorized replay has to match the pandas backtest on the real path
     check, _ = apply_rule(prices, returns[list(prices.columns)].to_numpy()[None, ...])
@@ -774,7 +785,7 @@ def main():
     save_forecast_plots(fc_fan, fc_summary, future_idx, realized_1y)
 
     save_to_sql(prices, monthly_weights, cost_table, portfolio_returns, net_returns,
-                spy_returns, liquidity_df, mc_summary, mc_fan=mc_cum_paths)
+                bench_returns, liquidity_df, mc_summary, mc_fan=mc_cum_paths)
 
     plt.figure(figsize=(12, 6))
     pct_bands = np.percentile(mc_cum_paths, [5, 25, 50, 75, 95], axis=0)
@@ -793,8 +804,8 @@ def main():
     plt.figure(figsize=(12, 6))
     plt.plot(portfolio_cum, label="Gross", linewidth=2)
     plt.plot(net_cum, label="Net of cost", linewidth=2, linestyle="--")
-    plt.plot(spy_cum, label="SPY", linewidth=2, linestyle=":")
-    plt.title("Strategy vs SPY")
+    plt.plot(bench_cum, label="Equal weight", linewidth=2, linestyle=":")
+    plt.title("Strategy vs equal weight")
     plt.xlabel("Date"); plt.ylabel("Growth of $1")
     plt.legend(); plt.grid(True); plt.tight_layout()
     plt.savefig("performance_gross_net_v4.png", dpi=120)
@@ -802,16 +813,16 @@ def main():
 
     plt.figure(figsize=(12, 6))
     plt.plot(roll_sharpe_1y, label="Strategy", linewidth=2)
-    plt.plot(roll_sharpe_1y_spy, label="SPY", linewidth=2)
+    plt.plot(roll_sharpe_1y_bench, label="Equal weight", linewidth=2)
     plt.title("Rolling 1Y Sharpe Ratio")
     plt.xlabel("Date"); plt.ylabel("Sharpe Ratio")
     plt.legend(); plt.grid(True); plt.tight_layout()
-    plt.savefig("rolling_1y_sharpe_vs_spy_v4.png", dpi=120)
+    plt.savefig("rolling_1y_sharpe_vs_ew_v4.png", dpi=120)
     plt.close()
 
     plt.figure(figsize=(12, 6))
     plt.plot(drawdown_net, label="Strategy", linewidth=2)
-    plt.plot(drawdown_spy, label="SPY", linewidth=2)
+    plt.plot(drawdown_bench, label="Equal weight", linewidth=2)
     plt.title("Drawdown")
     plt.xlabel("Date"); plt.ylabel("Drawdown")
     plt.legend(); plt.grid(True); plt.tight_layout()
@@ -828,11 +839,11 @@ def main():
         plt.savefig("rolling_24m_sharpe_v4.png", dpi=120)
         plt.close()
         print("\nSaved plots: performance_gross_net_v4.png, monte_carlo_fan_chart_v4.png, "
-              "rolling_1y_sharpe_vs_spy_v4.png, drawdown_comparison_v4.png, "
+              "rolling_1y_sharpe_vs_ew_v4.png, drawdown_comparison_v4.png, "
               "rolling_24m_sharpe_v4.png")
     else:
         print("\nSaved plots: performance_gross_net_v4.png, monte_carlo_fan_chart_v4.png, "
-              "rolling_1y_sharpe_vs_spy_v4.png, drawdown_comparison_v4.png")
+              "rolling_1y_sharpe_vs_ew_v4.png, drawdown_comparison_v4.png")
 
     print("\nAverage allocation across all rebalances:")
     avg_w = monthly_weights.mean()

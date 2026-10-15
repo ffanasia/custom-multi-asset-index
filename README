@@ -1,7 +1,7 @@
 # multi-asset momentum index
 
-Quick project testing whether a simple momentum-based portfolio could keep pace
-with SPY on a risk-adjusted basis, without doing anything exotic — just monthly
+Quick project testing whether a simple momentum rule beats just holding the
+same five ETFs in equal weight, without doing anything exotic — monthly
 rebalancing across a handful of liquid ETFs.
 
 ## what it does
@@ -26,9 +26,10 @@ single backtest. This is the version behind the site and resume.
 
 ## results (v4, 2015-2024)
 
-Sharpe ~0.65 vs SPY's ~0.67, but max drawdown of -22% vs SPY's -34%. Total
-return trails SPY somewhat, which tracks — running at ~13.6% annualized vol
-vs. SPY's ~17.6% is going to cost some upside, that's not a bug.
+The comparison is an equal weight of SPY/TLT/GLD/QQQ/EEM, rebalanced on the
+same dates and charged the same 5 bps. On 2015-2024 the rule returned 169%
+against 147% for that mix, with a worst loss of -23% against -26%. Sharpe is
+0.65 against 0.68. SPY is one of the holdings, not the benchmark.
 
 Extended validation (walk-forward, ablation, cost sensitivity, regime
 breakdown, block-bootstrap significance, deflated Sharpe ratio) lives in
