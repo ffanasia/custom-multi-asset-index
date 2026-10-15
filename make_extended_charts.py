@@ -12,13 +12,7 @@ PALETTES = {
                   SIGNAL="#6fa383", GRID="#2b322d", AXIS="#3c453d"),
 }
 
-# these charts are displayed at ~380-680px wide in the actual page layout, far
-# smaller than a typical matplotlib default render -- so type sizes here are set
-# for legibility at THAT display size, not for a full-bleed standalone image.
-# explanatory prose lives in the HTML figcaption (real, crisp, reflowing text)
-# rather than baked into the raster image as small annotations -- annotations
-# inside the PNG are limited to short axis/legend/value labels that stay legible
-# when the image is scaled down.
+# type is sized for the page, not a full-screen figure
 TICK_FS   = 20
 LABEL_FS  = 22
 LEGEND_FS = 18
@@ -52,9 +46,7 @@ for theme, pal in PALETTES.items():
         ax.grid(True, axis="y", alpha=0.9)
         ax.grid(False, axis="x")
 
-    # ---------------------------------------------------------------
-    # Fig 5 -- ablation ladder (stacked vertically: each panel gets full width)
-    # ---------------------------------------------------------------
+    # ablation
     ab = pd.DataFrame(R["ablation"])
     labels = ["Naive", "+ vol\nsizing", "+ defensive\nfallback", "+ trans.\ncosts"]
     XTICK_FS = 16
@@ -86,9 +78,7 @@ for theme, pal in PALETTES.items():
     fig.savefig(OUT + f"fig5_ablation_{theme}.png", dpi=150, bbox_inches="tight", transparent=True)
     plt.close(fig)
 
-    # ---------------------------------------------------------------
-    # Fig 6 -- cost sensitivity
-    # ---------------------------------------------------------------
+    # costs
     cs = pd.DataFrame(R["cost_sensitivity"])
     fig, ax = plt.subplots(figsize=(8.0, 4.6), dpi=150)
     ax2 = ax.twinx()
@@ -111,9 +101,7 @@ for theme, pal in PALETTES.items():
     fig.savefig(OUT + f"fig6_cost_sensitivity_{theme}.png", dpi=150, transparent=True)
     plt.close(fig)
 
-    # ---------------------------------------------------------------
-    # Fig 7 -- regime breakdown
-    # ---------------------------------------------------------------
+    # regimes
     rg = pd.DataFrame(R["regimes"])
     short_labels = ["Pre-2019", "2019–20", "COVID\ncrash", "COVID\nrecovery", "2022\nbear", "2023–24"]
     fig, ax = plt.subplots(figsize=(9.2, 5.0), dpi=150)
@@ -136,11 +124,7 @@ for theme, pal in PALETTES.items():
     fig.savefig(OUT + f"fig7_regimes_{theme}.png", dpi=150, transparent=True)
     plt.close(fig)
 
-    # ---------------------------------------------------------------
-    # Fig 8 -- walk-forward (with SE error bars + SPY OOS reference)
-    # reference lines carry their own legend entries instead of floating
-    # annotation text, which stays legible when the image is scaled down.
-    # ---------------------------------------------------------------
+    # walk-forward
     wf = pd.DataFrame(R["walk_forward"]["grid"]).sort_values("window_days")
     wf["fit_se"] = R["walk_forward"]["fit_se"]
     wf["full_se"] = R["walk_forward"]["full_se"]
@@ -165,9 +149,7 @@ for theme, pal in PALETTES.items():
     fig.savefig(OUT + f"fig8_walkforward_{theme}.png", dpi=150, bbox_inches="tight", transparent=True)
     plt.close(fig)
 
-    # ---------------------------------------------------------------
-    # Fig 9 -- bootstrap significance test (Sharpe diff, strategy vs SPY)
-    # ---------------------------------------------------------------
+    # sharpe gap
     sig = R["significance"]
     ci_lo, ci_hi = sig["sharpe_diff_ci_95"]
     center = sig["diff_mean"]
@@ -192,10 +174,7 @@ for theme, pal in PALETTES.items():
     fig.savefig(OUT + f"fig9_significance_{theme}.png", dpi=150, bbox_inches="tight", transparent=True)
     plt.close(fig)
 
-    # ---------------------------------------------------------------
-    # Fig 10 -- deflated Sharpe ratio: DSR vs. assumed number of implicit trials
-    # (stacked vertically: each panel gets full width)
-    # ---------------------------------------------------------------
+    # deflated sharpe
     ds = R["deflated_sharpe"]
     sweep = pd.DataFrame(ds["sweep"])
 

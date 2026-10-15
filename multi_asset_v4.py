@@ -1,17 +1,4 @@
-"""
-multi-asset dual momentum backtest, v4.
-
-monthly rebalance across SPY/TLT/GLD/QQQ/EEM. the logic:
-  - gate: an asset only counts if its blended 3/6/12M trailing return is
-    positive (MOM_BLEND_WINDOWS)
-  - rank: among whatever passes the gate, rank by REL_MOM_WINDOW trailing
-    return and hold the top 2, sized inverse to their 20-day realized vol
-  - fallback: if nothing passes, don't just dump into TLT -- score
-    TLT/GLD/CASH against each other and hold whichever's actually holding
-    up
-  - weights decided at month-end kick in one trading day later (no
-    lookahead), and turnover gets a bps cost charged every rebalance
-"""
+"""monthly dual momentum. SPY, TLT, GLD, QQQ, EEM. 2015-2024."""
 
 import sqlite3
 import time
@@ -32,18 +19,12 @@ start_date = "2015-01-01"
 end_date = "2024-12-31"
 risk_free_rate = 0.02
 
-# ranking window for relative momentum, among whatever passes the gate below.
-# widened from 126 (6M) to 252 (12M) -- see notes at top, biggest lever in the model
-REL_MOM_WINDOW = 252
+REL_MOM_WINDOW = 252  # was 126. 12m ranked a bit better on the full sample
 
-# fallback basket for when nothing has positive momentum. cash is always
-# an option too (earns rf rate)
 DEFENSIVE_BASKET = ["TLT", "GLD"]
 CASH_TICKER = "CASH"
 
-# blending these lookback windows for the risk-on/off gate instead of just
-# a raw 252-day momentum signal
-MOM_BLEND_WINDOWS = [63, 126, 252]  # ~3M, 6M, 12M
+MOM_BLEND_WINDOWS = [63, 126, 252]  # 3m / 6m / 12m, averaged for the gate
 
 # Transaction costs
 COST_BPS = 5.0
@@ -53,14 +34,12 @@ PORTFOLIO_NOTIONAL = 10_000_000
 ADV_WINDOW = 20
 PARTICIPATION_WARN = 0.05
 
-# Monte Carlo
-MC_SIMULATIONS = 1_000_000   # total simulated paths for the risk-metric distributions
-MC_BLOCK_SIZE = 20
-MC_BATCH_SIZE = 10_000       # paths processed per vectorized batch (memory control;
-                             # ~190MB transient per batch for a ~2500-day history)
-MC_FAN_CHART_SAMPLE = 5_000  # subsample of paths kept for the fan-chart plot (percentiles
-                             # converge well before 1M paths, so plotting all of them would
-                             # just burn memory/time for no visual benefit)
+MC_SIMULATIONS = 5_000
+MC_BLOCK_SIZE = 20             # sharpe significance test in the validation script
+STRATEGY_BLOCK = 126           # ~6 months. shorter blocks chop up the trends this rule trades
+MC_BATCH_SIZE = 250
+MC_FAN_CHART_SAMPLE = 1_000
+FORECAST_YEARS = 5
 
 DB_PATH = Path(__file__).with_name("backtest_v4.db")
 
@@ -104,17 +83,16 @@ def download_data():
 def compute_signals(prices):
     returns = prices.pct_change().dropna()
 
-    rel_mom = prices.pct_change(REL_MOM_WINDOW)  # relative momentum (ranking)
+    rel_mom = prices.pct_change(REL_MOM_WINDOW)
     vol20 = returns.rolling(20).std()
 
-    # Blended absolute momentum for the risk-on/off gate (3M/6M/12M average).
     blend_parts = [prices.pct_change(w) for w in MOM_BLEND_WINDOWS]
     abs_mom_blend = sum(blend_parts) / len(blend_parts)
 
     return returns, rel_mom, vol20, abs_mom_blend
 
 
-# --- rebalance dates (fixed a bug here in v3, fine now) ---
+# last trading day of each month. v3 grabbed calendar month-ends and missed some.
 def month_end_trading_dates(prices):
     s = prices.index.to_series()
     month_ends = s.groupby(s.index.to_period("M")).last()
@@ -149,14 +127,11 @@ def build_monthly_weights(prices, abs_mom_blend, rel_mom, vol20, valid_dates):
         w = pd.Series(0.0, index=all_cols)
 
         if len(positive_assets) == 0:
-            # pick whichever of TLT/GLD/CASH is holding up best instead of
-            # defaulting straight to TLT -- see notes at top for why
             scores = {}
             for cand in defensive_candidates:
                 if cand in abs_signal.index:
                     scores[cand] = abs_signal[cand]
-            # CASH's "momentum" proxy: risk-free accrual over ~1yr blend horizon
-            scores[CASH_TICKER] = risk_free_rate
+            scores[CASH_TICKER] = risk_free_rate  # flat 2%, not a trailing return
 
             best = max(scores, key=scores.get)
             w[best] = 1.0
@@ -185,8 +160,7 @@ def apply_weights(monthly_weights, returns_ext):
 
 
 def build_extended_returns(returns):
-    """Add a synthetic CASH column earning the daily risk-free rate so the
-    defensive-basket logic can allocate to cash like any other asset."""
+    """cash earns rf/252 per day."""
     returns_ext = returns.copy()
     returns_ext[CASH_TICKER] = risk_free_rate / 252
     return returns_ext
@@ -271,10 +245,7 @@ def max_drawdown(cum_series):
 
 
 def rolling_24m_stats(portfolio_returns, window_days=252 * 2):
-    # this used to roll over (1 + returns) and then add 1 again inside the
-    # lambda -- double counted the +1 every window (prod(2+r) instead of
-    # prod(1+r)) and produced nonsense numbers. rolling over raw returns
-    # directly fixes it.
+    # older version did prod(2+r). roll the returns themselves.
     roll_return = portfolio_returns.rolling(window_days).apply(
         lambda x: np.prod(1 + x) ** (252 / window_days) - 1, raw=True
     )
@@ -284,53 +255,161 @@ def rolling_24m_stats(portfolio_returns, window_days=252 * 2):
     return roll_return, roll_sharpe
 
 
-# --- monte carlo (block bootstrap) ---
-# first pass at this used a python while-loop per path with a pandas
-# .std() call each time -- fine at a few thousand sims, but at 1M+ it
-# would've taken hours. this version does everything as batched numpy
-# arrays instead. also no reason to hang onto all 1M full paths just for
-# the fan chart -- the percentile bands converge way before that, so only
-# a small subsample (MC_FAN_CHART_SAMPLE) gets kept for plotting. the
-# scalar metrics (terminal return, sharpe, mdd) are cheap to keep for
-# every single path though.
-def monte_carlo_simulate(daily_returns, n_sims=MC_SIMULATIONS, block_size=MC_BLOCK_SIZE,
-                          batch_size=MC_BATCH_SIZE, fan_sample=MC_FAN_CHART_SAMPLE,
-                          rf=risk_free_rate):
-    r = daily_returns.dropna().values
-    n = len(r)
+def _rebalance_positions(prices):
+    month_ends = month_end_trading_dates(prices)
+    loc = prices.index.get_indexer(month_ends)
+    need = max(REL_MOM_WINDOW, max(MOM_BLEND_WINDOWS), 20)
+    return loc[loc >= need]
+
+
+def apply_rule(prices, asset_returns, cost_bps=COST_BPS):
+    """Replay the monthly rule on a panel of asset returns.
+
+    asset_returns is (n_paths, n_days, n_assets) in the same column order as
+    prices, and n_days is len(prices) - 1. Decision on day t earns day t+1.
+    """
+    names = list(prices.columns)
+    r = np.asarray(asset_returns, dtype=float)
+    n_paths, n_ret, n_assets = r.shape
+    if n_assets != len(names) or n_ret != len(prices) - 1:
+        raise ValueError("return panel doesn't line up with prices")
+
+    growth = np.cumprod(1.0 + r, axis=1)
+
+    def mom(t, window):
+        num = growth[:, t - 1, :]
+        den = 1.0 if t == window else growth[:, t - window - 1, :]
+        return num / den - 1.0
+
+    def_idx = [names.index(t) for t in DEFENSIVE_BASKET if t in names]
+    acts = []
+    held = []
+    for t in _rebalance_positions(prices):
+        act = int(t)
+        if act >= n_ret:
+            continue
+        blend = sum(mom(t, w) for w in MOM_BLEND_WINDOWS) / len(MOM_BLEND_WINDOWS)
+        rel = mom(t, REL_MOM_WINDOW)
+        vol = r[:, t - 20:t, :].std(axis=1, ddof=1)
+
+        w = np.zeros((n_paths, n_assets + 1))
+        positive = np.isfinite(blend) & np.isfinite(rel) & (blend > 0)
+        n_pos = positive.sum(axis=1)
+
+        scores = np.empty((n_paths, len(def_idx) + 1))
+        for j, di in enumerate(def_idx):
+            scores[:, j] = blend[:, di]
+        scores[:, -1] = risk_free_rate
+        best = scores.argmax(axis=1)
+        for j, di in enumerate(def_idx):
+            w[best == j, di] = 1.0
+        w[best == len(def_idx), n_assets] = 1.0
+
+        rel_masked = np.where(positive, rel, -np.inf)
+        part = np.argpartition(rel_masked, -2, axis=1)[:, -2:]
+        part_rel = np.take_along_axis(rel_masked, part, axis=1)
+        order = np.argsort(part_rel, axis=1)
+        top2 = np.take_along_axis(part, order, axis=1)
+        vol_top = np.take_along_axis(vol, top2, axis=1)
+        rows = np.arange(n_paths)
+
+        w[n_pos >= 1] = 0.0
+        one = n_pos == 1
+        w[rows[one], top2[one, 1]] = 1.0
+
+        two = n_pos >= 2
+        good_vol = np.isfinite(vol_top) & (vol_top > 0)
+        use_inv = two & good_vol.all(axis=1)
+        if use_inv.any():
+            iv = 1.0 / vol_top[use_inv]
+            iv /= iv.sum(axis=1, keepdims=True)
+            w[rows[use_inv], top2[use_inv, 0]] = iv[:, 0]
+            w[rows[use_inv], top2[use_inv, 1]] = iv[:, 1]
+        equal = two & ~use_inv
+        w[rows[equal], top2[equal, 0]] = 0.5
+        w[rows[equal], top2[equal, 1]] = 0.5
+
+        acts.append(act)
+        held.append(w)
+
+    daily_w = np.zeros((n_paths, n_ret, n_assets + 1))
+    for i, act in enumerate(acts):
+        end = acts[i + 1] if i + 1 < len(acts) else n_ret
+        daily_w[:, act:end, :] = held[i][:, None, :]
+
+    port = (daily_w[:, :, :n_assets] * r).sum(axis=2)
+    port += daily_w[:, :, n_assets] * (risk_free_rate / 252.0)
+
+    prev = np.zeros((n_paths, n_assets + 1))
+    unit_cost = cost_bps / 10_000.0
+    for i, act in enumerate(acts):
+        turnover = np.abs(held[i] - prev).sum(axis=1)
+        port[:, act] -= turnover * unit_cost
+        prev = held[i]
+
+    first_on = acts[0] if acts else 0
+    return port, first_on
+
+
+def _path_stats(port, rf=risk_free_rate):
+    cum = np.cumprod(1.0 + port, axis=1)
+    terminal = cum[:, -1] - 1.0
+    excess = port - rf / 252.0
+    sd = excess.std(axis=1, ddof=1)
+    sd = np.where(sd == 0, np.nan, sd)
+    sharpe = np.sqrt(252) * excess.mean(axis=1) / sd
+    running_max = np.maximum.accumulate(cum, axis=1)
+    drawdown = (cum / running_max - 1.0).min(axis=1)
+    return terminal, sharpe, drawdown, cum
+
+
+def monte_carlo_simulate(prices, n_sims=MC_SIMULATIONS, block_size=STRATEGY_BLOCK,
+                          batch_size=MC_BATCH_SIZE, fan_sample=MC_FAN_CHART_SAMPLE):
+    """Block-bootstrap the asset returns together, then rerun the rule.
+
+    Same block dates for every ETF, so the daily correlation stays. Reshuffling
+    the finished strategy P&L doesn't do that: the real history just lands in
+    the middle of a shuffle of itself.
+    """
+    raw = prices.pct_change()
+    if raw.iloc[1:].isna().any().any():
+        raise ValueError("missing returns after the first day")
+    realized = raw.iloc[1:].to_numpy(dtype=float)
+    n, n_assets = realized.shape
     n_blocks = int(np.ceil(n / block_size))
     offsets = np.arange(block_size)
 
     terminal_returns = np.empty(n_sims)
     sharpes = np.empty(n_sims)
     drawdowns = np.empty(n_sims)
+    year_returns = []
     fan_paths = []
     fan_collected = 0
-
     done = 0
+
     while done < n_sims:
         cur = min(batch_size, n_sims - done)
-
-        # Draw cur * n_blocks random block-start indices at once, gather the
-        # corresponding return blocks, and truncate each path back to length n.
         starts = np.random.randint(0, n - block_size + 1, size=(cur, n_blocks))
-        idx = starts[:, :, None] + offsets[None, None, :]
-        batch = r[idx].reshape(cur, n_blocks * block_size)[:, :n]
+        idx = starts[:, :, None] + offsets
+        picked = idx.reshape(cur, n_blocks * block_size)[:, :n]
+        batch = realized[picked]
 
-        cum = np.cumprod(1 + batch, axis=1)
-        terminal_returns[done:done + cur] = cum[:, -1] - 1
+        port, first_on = apply_rule(prices, batch)
+        terminal, sharpe, drawdown, cum = _path_stats(port)
+        terminal_returns[done:done + cur] = terminal
+        sharpes[done:done + cur] = sharpe
+        drawdowns[done:done + cur] = drawdown
 
-        excess = batch - rf / 252
-        sharpes[done:done + cur] = np.sqrt(252) * excess.mean(axis=1) / excess.std(axis=1)
-
-        running_max = np.maximum.accumulate(cum, axis=1)
-        drawdowns[done:done + cur] = (cum / running_max - 1).min(axis=1)
+        usable = port[:, first_on:]
+        n_years = usable.shape[1] // 252
+        if n_years:
+            years = usable[:, :n_years * 252].reshape(cur, n_years, 252)
+            year_returns.append(np.prod(1.0 + years, axis=2) - 1.0)
 
         if fan_collected < fan_sample:
             take = min(fan_sample - fan_collected, cur)
             fan_paths.append(cum[:take])
             fan_collected += take
-
         done += cur
 
     summary = {
@@ -338,13 +417,13 @@ def monte_carlo_simulate(daily_returns, n_sims=MC_SIMULATIONS, block_size=MC_BLO
         "sharpe": sharpes,
         "max_drawdown": drawdowns,
     }
-    fan_cum_paths = np.vstack(fan_paths)
-    return summary, fan_cum_paths
+    return summary, np.vstack(fan_paths), np.concatenate(year_returns, axis=0)
 
 
-def print_mc_report(summary, realized_terminal_return, realized_sharpe, realized_mdd):
-    print("\n===== Monte Carlo Risk Simulation (block bootstrap) =====")
-    print(f"Simulations: {len(summary['terminal_return']):,}, block size: {MC_BLOCK_SIZE} days")
+def print_mc_report(summary, year_returns, realized_terminal_return, realized_sharpe, realized_mdd):
+    n = len(summary["terminal_return"])
+    print("\nmonte carlo: rule rerun on reshuffled asset returns")
+    print(f"{n:,} paths, {STRATEGY_BLOCK}-day blocks, assets moved together")
     for label, key, realized in [
         ("Terminal Return", "terminal_return", realized_terminal_return),
         ("Sharpe Ratio", "sharpe", realized_sharpe),
@@ -352,14 +431,213 @@ def print_mc_report(summary, realized_terminal_return, realized_sharpe, realized
     ]:
         arr = summary[key]
         p5, p50, p95 = np.nanpercentile(arr, [5, 50, 95])
-        pct_rank = (arr < realized).mean() * 100
-        print(f"  {label:<16} sim P5={p5:8.3f}  P50={p50:8.3f}  P95={p95:8.3f}  "
-              f"| realized={realized:8.3f}  (percentile rank {pct_rank:5.1f}%)")
+        better = (arr < realized).mean() * 100
+        print(f"  {label:<16} P5={p5:8.3f}  P50={p50:8.3f}  P95={p95:8.3f}  "
+              f"| history={realized:8.3f}  (better than {better:4.1f}% of paths)")
 
-    var95 = -np.nanpercentile(summary["terminal_return"], 5)
-    cvar95 = -summary["terminal_return"][summary["terminal_return"] <= np.nanpercentile(summary["terminal_return"], 5)].mean()
-    print(f"\n  1Y-equivalent VaR(95%) on terminal return : {var95:.2%}")
-    print(f"  CVaR(95%) on terminal return               : {cvar95:.2%}")
+    flat = year_returns.ravel()
+    p5 = np.percentile(flat, 5)
+    tail = flat[flat <= p5]
+    print(f"\n  1y return, inside the reshuffled histories")
+    print(f"    5th percentile      {p5:8.2%}")
+    print(f"    mean of the worst 5% {tail.mean():8.2%}")
+
+
+def forecast_paths(prices, n_sims=MC_SIMULATIONS, horizon=FORECAST_YEARS * 252,
+                    block_size=STRATEGY_BLOCK, batch_size=MC_BATCH_SIZE,
+                    fan_sample=MC_FAN_CHART_SAMPLE):
+    """Paths from the last real close. Blocks are drawn from history, but the
+    lookback in front of the forecast is the actual recent prices, and the
+    rule is rerun as the path unfolds."""
+    names = list(prices.columns)
+    hist = prices.pct_change().iloc[1:]
+    if hist.isna().any().any():
+        raise ValueError("missing returns after the first day")
+    hist = hist.to_numpy(dtype=float)
+    n_hist, n_assets = hist.shape
+
+    tail_n = max(REL_MOM_WINDOW, max(MOM_BLEND_WINDOWS)) + 21
+    tail = prices.iloc[-tail_n:]
+    future_idx = pd.bdate_range(tail.index[-1] + pd.Timedelta(days=1), periods=horizon)
+    cal = tail.index.append(future_idx)
+    stub = pd.DataFrame(1.0, index=cal, columns=names)
+    real_ret = tail.pct_change().iloc[1:].to_numpy(dtype=float)
+    forecast_start = len(real_ret)
+
+    n_blocks = int(np.ceil(horizon / block_size))
+    offsets = np.arange(block_size)
+    terminal_returns = np.empty(n_sims)
+    cagrs = np.empty(n_sims)
+    sharpes = np.empty(n_sims)
+    drawdowns = np.empty(n_sims)
+    return_1y = np.empty(n_sims)
+    fan_paths = []
+    fan_collected = 0
+    done = 0
+
+    while done < n_sims:
+        cur = min(batch_size, n_sims - done)
+        starts = np.random.randint(0, n_hist - block_size + 1, size=(cur, n_blocks))
+        idx = starts[:, :, None] + offsets
+        future = hist[idx.reshape(cur, n_blocks * block_size)[:, :horizon]]
+        real = np.repeat(real_ret[None, :, :], cur, axis=0)
+        panel = np.concatenate([real, future], axis=1)
+
+        port, _ = apply_rule(stub, panel)
+        fwd = port[:, forecast_start:]
+        terminal, sharpe, drawdown, cum = _path_stats(fwd)
+        terminal_returns[done:done + cur] = terminal
+        cagrs[done:done + cur] = (1.0 + terminal) ** (1.0 / FORECAST_YEARS) - 1.0
+        sharpes[done:done + cur] = sharpe
+        drawdowns[done:done + cur] = drawdown
+        return_1y[done:done + cur] = np.prod(1.0 + fwd[:, :252], axis=1) - 1.0
+
+        if fan_collected < fan_sample:
+            take = min(fan_sample - fan_collected, cur)
+            fan_paths.append(cum[:take])
+            fan_collected += take
+        done += cur
+
+    summary = {
+        "terminal_return": terminal_returns,
+        "cagr": cagrs,
+        "sharpe": sharpes,
+        "max_drawdown": drawdowns,
+        "return_1y": return_1y,
+    }
+    return summary, np.vstack(fan_paths), future_idx
+
+
+def print_forecast(summary):
+    print(f"\nforecast from the last close, next {FORECAST_YEARS} years")
+    print(f"{len(summary['terminal_return']):,} paths, {STRATEGY_BLOCK}-day blocks, rule rerun")
+    for label, key in [
+        ("1y return", "return_1y"),
+        ("5y growth", "terminal_return"),
+        ("5y CAGR", "cagr"),
+        ("5y Sharpe", "sharpe"),
+        ("5y max drawdown", "max_drawdown"),
+    ]:
+        arr = summary[key]
+        p5, p50, p95 = np.nanpercentile(arr, [5, 50, 95])
+        print(f"  {label:<16} P5={p5:8.3f}  P50={p50:8.3f}  P95={p95:8.3f}")
+    y1 = summary["return_1y"]
+    term = summary["terminal_return"]
+    worst = y1[y1 <= np.percentile(y1, 5)]
+    print(f"  P(1y loss) {np.mean(y1 < 0):.1%}    P(5y loss) {np.mean(term < 0):.1%}")
+    print(f"  mean of the worst 5% of 1y returns: {worst.mean():.2%}")
+
+
+def _hist(arr, bins):
+    counts, edges = np.histogram(arr, bins=bins)
+    labels = [f"{edges[i]:.0%}" for i in range(len(counts))]
+    return labels, counts.tolist(), edges
+
+
+def save_forecast_plots(fan, summary, future_idx, realized_1y):
+    import json
+    pct = np.percentile(fan, [5, 25, 50, 75, 95], axis=0)
+    pct = np.concatenate([np.ones((5, 1)), pct], axis=1)
+    years = np.arange(pct.shape[1]) / 252.0
+
+    fig, ax = plt.subplots(figsize=(12, 6.5))
+    ax.fill_between(years, pct[0], pct[4], color="steelblue", alpha=0.18, label="5th-95th")
+    ax.fill_between(years, pct[1], pct[3], color="steelblue", alpha=0.32, label="25th-75th")
+    ax.plot(years, pct[2], color="black", linewidth=2.0, label="Median")
+    ax.axhline(1.0, color="gray", linewidth=1, linestyle=":")
+    ax.set_xlim(0, years[-1] + 0.55)
+    ax.set_title(f"Next {FORECAST_YEARS} years, {MC_SIMULATIONS:,} reruns of the rule")
+    ax.set_xlabel("Years from the last close")
+    ax.set_ylabel("Growth of $1")
+    ax.legend(frameon=False, loc="upper left")
+    ax.grid(True, axis="y")
+    for band, name in ((0, "5th"), (2, "median"), (4, "95th")):
+        ax.annotate(f"{name}  {pct[band, -1]:.2f}",
+                    xy=(years[-1], pct[band, -1]),
+                    xytext=(6, 0), textcoords="offset points",
+                    va="center", fontsize=9)
+    fig.tight_layout()
+    fig.savefig("forecast_fan_v4.png", dpi=140)
+    plt.close(fig)
+
+    y1 = summary["return_1y"]
+    fig, ax = plt.subplots(figsize=(12, 5.5))
+    ax.hist(y1, bins=40, color="steelblue", alpha=0.85, edgecolor="white", linewidth=0.4)
+    marks = [
+        (np.percentile(y1, 5), "5th", "right"),
+        (np.percentile(y1, 95), "95th", "left"),
+    ]
+    ax.axvline(np.percentile(y1, 50), color="black", linewidth=1.2, label="forecast median")
+    for val, name, ha in marks:
+        ax.axvline(val, color="black", linewidth=1.2)
+        ax.text(val, ax.get_ylim()[1] * 0.97, f"{name} {val:.0%}", fontsize=9, va="top", ha=ha)
+    if realized_1y is not None and len(realized_1y):
+        hist_med = float(np.median(realized_1y))
+        ax.axvline(hist_med, color="#a35f1b", linewidth=1.6, linestyle="--",
+                   label=f"historical 1y median ({hist_med:.0%})")
+        ax.legend(frameon=False)
+    ax.set_title("Distribution of the next 1-year return")
+    ax.set_xlabel("Return")
+    ax.set_ylabel("Paths")
+    ax.grid(True, axis="y")
+    fig.tight_layout()
+    fig.savefig("forecast_1y_v4.png", dpi=140)
+    plt.close(fig)
+
+    dd = summary["max_drawdown"]
+    fig, ax = plt.subplots(figsize=(12, 5.5))
+    ax.hist(dd, bins=40, color="steelblue", alpha=0.85, edgecolor="white", linewidth=0.4)
+    for q, name, ha in ((5, "deeper, 5th", "right"), (50, "median", "left"), (95, "shallower, 95th", "left")):
+        val = np.percentile(dd, q)
+        ax.axvline(val, color="black", linewidth=1.2)
+        ax.text(val, ax.get_ylim()[1] * 0.97, f"{name} {val:.0%}", fontsize=9, va="top", ha=ha)
+    ax.set_title(f"Worst drawdown over the next {FORECAST_YEARS} years")
+    ax.set_xlabel("Max drawdown")
+    ax.set_ylabel("Paths")
+    ax.grid(True, axis="y")
+    fig.tight_layout()
+    fig.savefig("forecast_drawdown_v4.png", dpi=140)
+    plt.close(fig)
+
+    step = 63
+    idx = list(range(0, pct.shape[1], step))
+    if idx[-1] != pct.shape[1] - 1:
+        idx.append(pct.shape[1] - 1)
+    as_of = future_idx[0] - pd.tseries.offsets.BDay(1)
+    labels = [as_of.strftime("%b %Y")] + [future_idx[i - 1].strftime("%b %Y") for i in idx[1:]]
+    y1_labels, y1_counts, _ = _hist(y1, bins=18)
+    dd_labels, dd_counts, _ = _hist(dd, bins=12)
+
+    def pcts(arr):
+        p5, p50, p95 = [float(x) for x in np.nanpercentile(arr, [5, 50, 95])]
+        return {"p5": p5, "p50": p50, "p95": p95}
+
+    payload = {
+        "n_paths": int(len(y1)),
+        "block_days": STRATEGY_BLOCK,
+        "years": FORECAST_YEARS,
+        "as_of": str(as_of.date()),
+        "p_loss_1y": float(np.mean(y1 < 0)),
+        "p_loss_5y": float(np.mean(summary["terminal_return"] < 0)),
+        "worst5_1y": float(y1[y1 <= np.percentile(y1, 5)].mean()),
+        "return_1y": pcts(y1),
+        "terminal": pcts(summary["terminal_return"]),
+        "cagr": pcts(summary["cagr"]),
+        "sharpe": pcts(summary["sharpe"]),
+        "max_drawdown": pcts(dd),
+        "fan_labels": labels,
+        "fan_p5": [round(float(pct[0, i]), 4) for i in idx],
+        "fan_p50": [round(float(pct[2, i]), 4) for i in idx],
+        "fan_p95": [round(float(pct[4, i]), 4) for i in idx],
+        "y1_labels": y1_labels,
+        "y1_counts": y1_counts,
+        "dd_labels": dd_labels,
+        "dd_counts": dd_counts,
+        "historical_1y_median": None if realized_1y is None or len(realized_1y) == 0 else float(np.median(realized_1y)),
+    }
+    with open("forecast_summary.json", "w") as f:
+        json.dump(payload, f, indent=2)
+    print("\nSaved plots: forecast_fan_v4.png, forecast_1y_v4.png, forecast_drawdown_v4.png")
 
 
 # --- save everything to sqlite ---
@@ -434,7 +712,7 @@ def main():
     net_mdd = max_drawdown(net_cum)
     spy_mdd = max_drawdown(spy_cum)
 
-    print("\n===== Performance Comparison (Gross vs Net-of-Cost vs SPY), v4 =====")
+    print("\ngross vs net vs spy")
     print(f"{'Metric':<20}{'Gross':>12}{'Net-of-Cost':>14}{'SPY':>12}")
     print(f"{'Total Return':<20}{index_return:>12.2%}{net_return:>14.2%}{spy_return:>12.2%}")
     print(f"{'Sharpe Ratio':<20}{index_sharpe:>12.2f}{net_sharpe:>14.2f}{spy_sharpe:>12.2f}")
@@ -454,64 +732,61 @@ def main():
         pct_negative = (roll_return_valid < 0).mean()
         print(f"Share of rolling 24M windows with a negative annualized return: {pct_negative:.1%}")
 
-    # rolling 1y sharpe vs spy -- an earlier version of this script had
-    # dropped these plots, adding them back here
     _, roll_sharpe_1y = rolling_24m_stats(net_returns, window_days=252)
     _, roll_sharpe_1y_spy = rolling_24m_stats(spy_returns, window_days=252)
 
-    # full drawdown series, not just the min, for the same plots
     drawdown_net = net_cum / net_cum.cummax() - 1
     drawdown_spy = spy_cum / spy_cum.cummax() - 1
 
-    print(f"\nRunning Monte Carlo: {MC_SIMULATIONS:,} simulations "
+    # the vectorized replay has to match the pandas backtest on the real path
+    check, _ = apply_rule(prices, returns[list(prices.columns)].to_numpy()[None, ...])
+    if not np.allclose(check[0], net_returns.to_numpy(), equal_nan=True):
+        gap = np.nanmax(np.abs(check[0] - net_returns.to_numpy()))
+        raise RuntimeError(f"replay doesn't match the backtest (max gap {gap:.3e})")
+
+    print(f"\nRunning Monte Carlo: {MC_SIMULATIONS:,} paths "
           f"(batched {MC_BATCH_SIZE:,} at a time)...")
     mc_start = time.time()
-    mc_summary, mc_cum_paths = monte_carlo_simulate(net_returns)
+    mc_summary, mc_cum_paths, year_returns = monte_carlo_simulate(prices)
     print(f"Monte Carlo done in {time.time() - mc_start:.1f}s.")
-    print_mc_report(mc_summary, net_return, net_sharpe, net_mdd)
+    print_mc_report(mc_summary, year_returns, net_return, net_sharpe, net_mdd)
+
+    realized_1y = net_returns.rolling(252).apply(
+        lambda x: np.prod(1 + x) - 1, raw=True
+    ).dropna()
+    print(f"\nRunning forecast: {MC_SIMULATIONS:,} paths...")
+    fc_start = time.time()
+    fc_summary, fc_fan, future_idx = forecast_paths(prices)
+    print(f"Forecast done in {time.time() - fc_start:.1f}s.")
+    print_forecast(fc_summary)
+    save_forecast_plots(fc_fan, fc_summary, future_idx, realized_1y)
 
     save_to_sql(prices, monthly_weights, cost_table, portfolio_returns, net_returns,
                 spy_returns, liquidity_df, mc_summary)
 
     plt.figure(figsize=(12, 6))
-    plt.plot(portfolio_cum, label="v4 Enhanced Index (Gross)", linewidth=2)
-    plt.plot(net_cum, label="v4 Enhanced Index (Net of Cost)", linewidth=2, linestyle="--")
+    plt.plot(portfolio_cum, label="Gross", linewidth=2)
+    plt.plot(net_cum, label="Net of cost", linewidth=2, linestyle="--")
     plt.plot(spy_cum, label="SPY", linewidth=2, linestyle=":")
-    plt.title("v4 Enhanced Multi-Asset Index vs SPY")
+    plt.title("Strategy vs SPY")
     plt.xlabel("Date"); plt.ylabel("Growth of $1")
     plt.legend(); plt.grid(True); plt.tight_layout()
     plt.savefig("performance_gross_net_v4.png", dpi=120)
     plt.close()
 
     plt.figure(figsize=(12, 6))
-    pct_bands = np.percentile(mc_cum_paths, [5, 25, 50, 75, 95], axis=0)
-    x = np.arange(mc_cum_paths.shape[1])
-    plt.fill_between(x, pct_bands[0], pct_bands[4], color="steelblue", alpha=0.2, label="5th-95th pct")
-    plt.fill_between(x, pct_bands[1], pct_bands[3], color="steelblue", alpha=0.35, label="25th-75th pct")
-    plt.plot(x, pct_bands[2], color="steelblue", linewidth=1.5, label="Median simulated path")
-    plt.plot(x, net_cum.values, color="black", linewidth=2, label="Realized (net-of-cost)")
-    plt.title(f"v4 Monte Carlo Block-Bootstrap Fan Chart "
-              f"({MC_SIMULATIONS:,} sims, {mc_cum_paths.shape[0]:,} plotted)")
-    plt.xlabel("Trading Day"); plt.ylabel("Growth of $1")
-    plt.legend(); plt.grid(True); plt.tight_layout()
-    plt.savefig("monte_carlo_fan_chart_v4.png", dpi=120)
-    plt.close()
-
-    # Rolling 1Y Sharpe: Strategy vs SPY (matches original Figure 2)
-    plt.figure(figsize=(12, 6))
-    plt.plot(roll_sharpe_1y, label="v4 Index Rolling Sharpe (net-of-cost)", linewidth=2)
-    plt.plot(roll_sharpe_1y_spy, label="SPY Rolling Sharpe", linewidth=2)
+    plt.plot(roll_sharpe_1y, label="Strategy", linewidth=2)
+    plt.plot(roll_sharpe_1y_spy, label="SPY", linewidth=2)
     plt.title("Rolling 1Y Sharpe Ratio")
     plt.xlabel("Date"); plt.ylabel("Sharpe Ratio")
     plt.legend(); plt.grid(True); plt.tight_layout()
     plt.savefig("rolling_1y_sharpe_vs_spy_v4.png", dpi=120)
     plt.close()
 
-    # Drawdown Comparison: Strategy vs SPY (matches original Figure 3)
     plt.figure(figsize=(12, 6))
-    plt.plot(drawdown_net, label="v4 Index Drawdown (net-of-cost)", linewidth=2)
-    plt.plot(drawdown_spy, label="SPY Drawdown", linewidth=2)
-    plt.title("Drawdown Comparison")
+    plt.plot(drawdown_net, label="Strategy", linewidth=2)
+    plt.plot(drawdown_spy, label="SPY", linewidth=2)
+    plt.title("Drawdown")
     plt.xlabel("Date"); plt.ylabel("Drawdown")
     plt.legend(); plt.grid(True); plt.tight_layout()
     plt.savefig("drawdown_comparison_v4.png", dpi=120)
@@ -521,7 +796,7 @@ def main():
         plt.figure(figsize=(12, 6))
         plt.plot(roll_sharpe, label="Rolling 24M Sharpe (net-of-cost)", linewidth=2)
         plt.axhline(0, color="gray", linewidth=1, linestyle=":")
-        plt.title("Rolling 24-Month Sharpe Ratio (strategy-only diagnostic)")
+        plt.title("Rolling 24M Sharpe")
         plt.xlabel("Date"); plt.ylabel("Sharpe Ratio")
         plt.legend(); plt.grid(True); plt.tight_layout()
         plt.savefig("rolling_24m_sharpe_v4.png", dpi=120)

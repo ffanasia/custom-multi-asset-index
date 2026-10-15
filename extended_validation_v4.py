@@ -1,19 +1,7 @@
-"""
-extended validation for the v4 multi-asset momentum index.
+"""extra checks around the v4 backtest.
 
-adds four things the original v4 backtest didn't have:
-  1. walk-forward validation of REL_MOM_WINDOW (fit blind on 2016-2019, test on 2020-2024)
-  2. a regime breakdown (bull/crash/recovery/rate-hike-bear/bull) instead of an anecdote
-  3. an ablation ladder isolating what each design choice actually buys you
-  4. a cost-sensitivity sweep + Calmar ratio
-
-reuses the real v4 functions/constants (imported as a module) wherever possible so this
-stays faithful to the methodology instead of re-deriving it. the only thing re-implemented
-is the weight-building loop, because it needs extra knobs (sizing/fallback variant) that
-v4.build_monthly_weights doesn't expose as parameters.
-
-price data: v4_prices_cache.csv, pulled straight from backtest_v4.db's 'prices' table --
-the exact same series the original 2015-2024 backtest used, no re-download.
+imports multi_asset_v4 and reruns it off v4_prices_cache.csv.
+the weight loop is copied so sizing, fallback, and the ranking window can change.
 """
 
 import json
@@ -30,10 +18,6 @@ prices = pd.read_csv("v4_prices_cache.csv", index_col=0, parse_dates=True)
 prices = prices[v4.tickers]
 
 
-# ---------------------------------------------------------------
-# core pipeline, parameterized (mirrors v4.main()'s logic exactly
-# at the default settings -- verified below against the known DB numbers)
-# ---------------------------------------------------------------
 def run_pipeline(prices, rel_mom_window=None, cost_bps=None, sizing="inv_vol", fallback="scored"):
     rel_mom_window = rel_mom_window or v4.REL_MOM_WINDOW
     cost_bps = v4.COST_BPS if cost_bps is None else cost_bps
@@ -112,9 +96,7 @@ def stats(r, cum=None):
 
 spy_returns = prices["SPY"].pct_change().dropna()
 
-# =================================================================
-# 0. sanity check -- does the harness reproduce the known v4 numbers?
-# =================================================================
+# does this match the numbers already in the db?
 baseline = run_pipeline(prices)
 baseline_stats = stats(baseline["net_returns"])
 spy_stats = stats(spy_returns)
@@ -129,9 +111,7 @@ print()
 
 results = {}
 
-# =================================================================
-# 1. ablation ladder
-# =================================================================
+# ablation
 print("=== ablation ladder ===")
 ablation_steps = [
     ("naive_momentum",        dict(sizing="equal",   fallback="tlt_default", cost_bps=0.0)),
@@ -149,9 +129,7 @@ for name, kwargs in ablation_steps:
 results["ablation"] = ablation_results
 print()
 
-# =================================================================
-# 2. cost sensitivity
-# =================================================================
+# costs
 print("=== cost sensitivity ===")
 cost_results = []
 for bps in [0.0, 5.0, 10.0, 20.0, 30.0]:
@@ -163,18 +141,14 @@ for bps in [0.0, 5.0, 10.0, 20.0, 30.0]:
 results["cost_sensitivity"] = cost_results
 print()
 
-# =================================================================
-# 3. calmar ratio
-# =================================================================
+# calmar
 print("=== calmar ratio (CAGR / |max drawdown|) ===")
 print(f"  strategy (net) : CAGR={baseline_stats['cagr']:.2%}  MDD={baseline_stats['max_drawdown']:.2%}  Calmar={baseline_stats['calmar']:.2f}")
 print(f"  SPY            : CAGR={spy_stats['cagr']:.2%}  MDD={spy_stats['max_drawdown']:.2%}  Calmar={spy_stats['calmar']:.2f}")
 results["calmar"] = {"strategy": baseline_stats, "spy": spy_stats}
 print()
 
-# =================================================================
-# 4. regime breakdown
-# =================================================================
+# regimes. dates were picked after looking at the chart.
 print("=== regime breakdown ===")
 regimes = [
     ("Pre-2019 bull",        "2016-01-01", "2018-12-31"),
@@ -206,9 +180,7 @@ for label, start, end in regimes:
 results["regimes"] = regime_results
 print()
 
-# =================================================================
-# 5. walk-forward validation of REL_MOM_WINDOW
-# =================================================================
+# ranking window. pick on 2016-2019, check 2020-2024.
 print("=== walk-forward validation ===")
 FIT_START, FIT_END = "2016-01-01", "2019-12-31"
 TEST_START, TEST_END = "2020-01-01", "2024-12-30"
@@ -244,11 +216,7 @@ print(f"    sharpe={wf_df.loc[fit_winner, 'test_sharpe']:.3f}  "
       f"return={wf_df.loc[fit_winner, 'test_return']:.2%}  "
       f"mdd={wf_df.loc[fit_winner, 'test_mdd']:.2%}")
 if fit_winner != full_winner:
-    print(f"    (differs from the full-period-optimal choice of {full_winner} days --")
-    print(f"     that window's OOS sharpe would have been {wf_df.loc[full_winner, 'test_sharpe']:.3f})")
-else:
-    print(f"    (matches the full-period-optimal choice -- the original 252-day pick")
-    print(f"     wasn't just curve-fit to this window)")
+    print(f"  full-sample winner was {full_winner}d, oos sharpe {wf_df.loc[full_winner, 'test_sharpe']:.3f}")
 
 results["walk_forward"] = {
     "grid": wf_df.reset_index().to_dict(orient="records"),
@@ -256,22 +224,11 @@ results["walk_forward"] = {
     "full_period_winner": int(full_winner),
 }
 
-# =================================================================
-# 6. statistical rigor add-ons, in response to review
-#    - analytical SE on the walk-forward Sharpe estimates (the fit period
-#      is only 4 years -- Sharpe estimates that short are noisy, and the
-#      original walk-forward chart didn't show that)
-#    - SPY's own Sharpe over the same OOS test window, so a high strategy
-#      OOS Sharpe can be read against "was the whole market just strong
-#      here" instead of looking like strategy-specific outperformance
-#    - a block-bootstrap significance check on strategy-vs-SPY Sharpe,
-#      reusing the same block-bootstrap machinery as the project's own
-#      Monte Carlo engine (paired resampling to preserve correlation)
-# =================================================================
-print("=== statistical rigor add-ons ===")
+# Lo (2002) SE on the fit-period Sharpes, plus a paired bootstrap vs SPY
+print("=== sharpe noise ===")
 
 def sharpe_se(sharpe, n_days):
-    """Analytical standard error of a Sharpe estimate (Lo, 2002 approx)."""
+    """Lo 2002. iid assumption, so these are probably a bit tight."""
     years = n_days / 252
     return np.sqrt((1 + 0.5 * sharpe ** 2) / years)
 
@@ -279,7 +236,7 @@ wf_df["fit_years"] = (pd.Timestamp(FIT_END) - pd.Timestamp(FIT_START)).days / 36
 wf_df["fit_se"] = wf_df.apply(lambda row: sharpe_se(row["fit_sharpe"], row["fit_years"] * 252), axis=1)
 full_years = (net_r.index[-1] - net_r.index[0]).days / 365.25
 wf_df["full_se"] = wf_df["full_sharpe"].apply(lambda s: sharpe_se(s, full_years * 252))
-print("fit-period Sharpe +/- 1 SE (4yr sample -- these overlap a lot):")
+print("fit-period Sharpe +/- 1 SE:")
 for w, row in wf_df.iterrows():
     print(f"  {w:>4}d:  {row['fit_sharpe']:.2f} +/- {row['fit_se']:.2f}")
 results["walk_forward"]["fit_se"] = wf_df["fit_se"].round(3).tolist()
@@ -287,11 +244,7 @@ results["walk_forward"]["full_se"] = wf_df["full_se"].round(3).tolist()
 
 spy_test_sharpe = v4.sharpe_ratio(spy_returns.loc[TEST_START:TEST_END], v4.risk_free_rate)
 strat_test_sharpe = wf_df.loc[fit_winner, "test_sharpe"]
-print(f"\nOOS (2020-2024) Sharpe -- strategy: {strat_test_sharpe:.2f}, SPY: {spy_test_sharpe:.2f}")
-print(f"(SPY's OOS Sharpe ({spy_test_sharpe:.2f}) is essentially flat vs. its own full-period number")
-print(f" ({spy_stats['sharpe']:.2f}) -- 2020-2024 was NOT a generically strong stretch for the market.")
-print(" the strategy's OOS boost looks specific to it, most plausibly the COVID crash landing")
-print(" inside this test window, not a rising-tide effect)")
+print(f"\n2020-2024 Sharpe: strategy {strat_test_sharpe:.2f}, SPY {spy_test_sharpe:.2f} (full sample {spy_stats['sharpe']:.2f})")
 results["walk_forward"]["spy_test_sharpe"] = float(spy_test_sharpe)
 
 # paired block-bootstrap on strategy-vs-SPY Sharpe, same block_size as v4's own MC
@@ -322,8 +275,7 @@ ci_lo, ci_hi = np.percentile(diff, [2.5, 97.5])
 pct_strategy_wins = (diff > 0).mean()
 print(f"\nblock-bootstrap (n={n_boot:,}, same paired history, block={block_size}d) on Sharpe(strategy) - Sharpe(SPY):")
 print(f"  95% CI: [{ci_lo:.3f}, {ci_hi:.3f}]  (includes zero: {ci_lo <= 0 <= ci_hi})")
-print(f"  strategy has higher Sharpe in {pct_strategy_wins:.1%} of resampled histories")
-print("  reading: the 0.65 vs 0.67 gap is not distinguishable from noise -- 'comparable' is the right word, not 'matched'")
+print(f"  strategy Sharpe higher in {pct_strategy_wins:.1%} of resamples")
 hist_counts, hist_edges = np.histogram(diff, bins=60)
 results["significance"] = {
     "sharpe_diff_ci_95": [float(ci_lo), float(ci_hi)],
@@ -337,49 +289,20 @@ results["significance"] = {
 }
 print()
 
-# =================================================================
-# 7. deflated Sharpe ratio (Bailey & Lopez de Prado, 2014)
-#
-# the walk-forward check (section 5) only tested one design choice --
-# REL_MOM_WINDOW -- against an out-of-sample period. but the full design
-# has several more choices that were all picked by eyeballing the *entire*
-# 2015-2024 period at once: the 5-asset universe, the top-2 concentration,
-# the [63,126,252] momentum blend, which two assets sit in the defensive
-# basket. every one of those is an implicit "trial" against the same data.
-# running N trials and reporting the best one inflates the reported Sharpe
-# above its true expected value under the null of no skill -- the more
-# trials, the more some of them will look good by luck alone.
-#
-# the deflated Sharpe ratio corrects for this. it asks: given that N
-# trials were effectively run, each with some variance in outcome, what
-# Sharpe ratio would you expect the *best* of them to hit by pure chance?
-# then it reports the probability that the observed Sharpe exceeds that
-# luck-adjusted bar, using the full (non-normal) return distribution
-# instead of assuming Gaussian returns.
-#
-# uses the 6 real walk-forward trials from section 5 as the empirical
-# basis for the trial-to-trial variance term -- an honest, computed number
-# rather than an assumed one. the true number of implicit trials in the
-# full design is almost certainly higher than 6; the sensitivity sweep
-# below shows how the result degrades as N grows, so that ambiguity is
-# visible rather than hidden behind one number.
-# =================================================================
-print("=== deflated sharpe ratio ===")
+# Bailey & Lopez de Prado. variance comes from the 6 windows above.
+# N is swept because the real trial count is higher than 6 and I don't know by how much.
+print("=== deflated sharpe ===")
 from scipy import stats as sps
 
 EULER_MASCHERONI = 0.5772156649015329
 
 def daily_sharpe(r, rf=v4.risk_free_rate):
-    """Non-annualized per-day Sharpe ratio -- kept in daily units throughout
-    so it's consistent with T (a daily observation count) and with the
-    skew/kurtosis of daily returns. (Annualizing SR but not the moments
-    used alongside it would silently break the formula.)"""
+    """per day, not annualized. T and the moments below are daily too."""
     excess = r.dropna() - rf / 252
     return excess.mean() / excess.std(ddof=1)
 
 def expected_max_sharpe(V, N):
-    """E[max of N Sharpe estimates] under the null of zero true skill,
-    given cross-trial variance V (Bailey & Lopez de Prado, 2014)."""
+    """sharpe you'd expect the best of N tries to hit by luck. V is the cross-trial variance."""
     if N <= 1:
         return 0.0
     return np.sqrt(V) * (
@@ -388,8 +311,7 @@ def expected_max_sharpe(V, N):
     )
 
 def probabilistic_sharpe(sr_hat, sr_benchmark, T, skew, kurt):
-    """P(true Sharpe > sr_benchmark), correcting for T, skewness, kurtosis
-    of the return series (Bailey & Lopez de Prado, 2012)."""
+    """P(true sharpe > benchmark), with skew and kurtosis in the denominator."""
     denom = np.sqrt(max(1 - skew * sr_hat + ((kurt - 1) / 4) * sr_hat ** 2, 1e-12))
     z = (sr_hat - sr_benchmark) * np.sqrt(T - 1) / denom
     return sps.norm.cdf(z)
@@ -413,12 +335,10 @@ print(f"  {len(grid)} real trials (walk-forward window grid), daily SR range "
 N_actual = len(grid)
 sr0_actual = expected_max_sharpe(V_trials, N_actual)
 dsr_actual = probabilistic_sharpe(sr_hat, sr0_actual, T_obs, skew_hat, kurt_hat)
-print(f"  N={N_actual} (only the tested windows): expected max SR by luck alone = "
-      f"{sr0_actual:.4f} (annualized {sr0_actual*np.sqrt(252):.3f}); DSR = {dsr_actual:.1%}")
+print(f"  N={N_actual}: luck bar {sr0_actual:.4f} daily ({sr0_actual*np.sqrt(252):.3f} ann), DSR {dsr_actual:.1%}")
 
 psr_n1 = probabilistic_sharpe(sr_hat, 0.0, T_obs, skew_hat, kurt_hat)
-print(f"  for reference, N=1 (single hypothesis, no multiple-testing correction): "
-      f"PSR vs. SR*=0 -> {psr_n1:.1%}")
+print(f"  N=1, PSR vs 0: {psr_n1:.1%}")
 
 n_sweep = [1, 2, 3, 6, 10, 15, 20, 30, 50, 75, 100]
 sweep_rows = []

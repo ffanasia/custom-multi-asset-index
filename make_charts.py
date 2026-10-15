@@ -5,9 +5,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-# ---- palettes, pulled directly from the page's own --ink/--accent/--signal/--line
-# tokens for each theme, so the charts blend into the page instead of sitting in a
-# fixed-color box regardless of theme. ----
+# light/dark colors from the site
 PALETTES = {
     "light": dict(INK="#1b2320", INK_SOFT="#4a544e", ACCENT="#a35f1b",
                   SIGNAL="#3f6e52", GRID="#cad0c4", AXIS="#a9b1a1"),
@@ -15,9 +13,7 @@ PALETTES = {
                   SIGNAL="#6fa383", GRID="#2b322d", AXIS="#3c453d"),
 }
 
-# these charts are displayed at ~380-680px wide in the actual page layout, far
-# smaller than a typical matplotlib default render -- so type sizes here are set
-# for legibility at THAT display size, not for a full-bleed standalone image.
+# type is sized for the page, not a full-screen figure
 TICK_FS   = 21
 LABEL_FS  = 24
 LEGEND_FS = 20
@@ -100,7 +96,7 @@ for theme, pal in PALETTES.items():
         ax.grid(True, axis="y", alpha=0.9)
         ax.grid(False, axis="x")
 
-    # Fig 1 -- growth of $1, gross vs net vs SPY
+    # growth of $1
     fig, ax = plt.subplots(figsize=(9.0, 4.6), dpi=150)
     ax.plot(df.index, df["cum_gross"], color=INK_SOFT, linewidth=2.4, linestyle=(0, (1, 1.6)), label="Gross")
     ax.plot(df.index, df["cum_net"], color=INK, linewidth=3.4, label="Net of cost")
@@ -112,7 +108,7 @@ for theme, pal in PALETTES.items():
     fig.savefig(OUT + f"fig1_growth_{theme}.png", dpi=150, transparent=True)
     plt.close(fig)
 
-    # Fig 2 -- drawdown, net vs SPY
+    # drawdown
     fig, ax = plt.subplots(figsize=(9.0, 4.2), dpi=150)
     ax.fill_between(df.index, dd_net * 100, 0, color=SIGNAL, alpha=0.22, linewidth=0)
     ax.plot(df.index, dd_net * 100, color=SIGNAL, linewidth=3.0, label="Strategy")
@@ -124,7 +120,7 @@ for theme, pal in PALETTES.items():
     fig.savefig(OUT + f"fig2_drawdown_{theme}.png", dpi=150, transparent=True)
     plt.close(fig)
 
-    # Fig 3 -- rolling 1y sharpe, net vs SPY
+    # rolling 1y sharpe
     fig, ax = plt.subplots(figsize=(9.0, 4.2), dpi=150)
     ax.axhline(0, color=AXIS, linewidth=1.2, linestyle=(0, (2, 2)))
     ax.plot(df.index, roll_net_cache, color=INK, linewidth=3.0, label="Strategy")
@@ -137,7 +133,7 @@ for theme, pal in PALETTES.items():
     fig.savefig(OUT + f"fig3_sharpe_{theme}.png", dpi=150, transparent=True)
     plt.close(fig)
 
-    # Fig 4 -- monte carlo block-bootstrap fan chart
+    # fan chart
     fig, ax = plt.subplots(figsize=(9.0, 4.6), dpi=150)
     ax.fill_between(x_days, pct_bands[0], pct_bands[4], color=ACCENT, alpha=0.18, linewidth=0, label="5th–95th pct")
     ax.fill_between(x_days, pct_bands[1], pct_bands[3], color=ACCENT, alpha=0.34, linewidth=0, label="25th–75th pct")
